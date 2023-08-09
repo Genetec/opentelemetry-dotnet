@@ -29,5 +29,10 @@ namespace OpenTelemetry.Metrics
         /// Collect will move it to <see cref="NoCollectPending"/>.
         /// </summary>
         CollectPending,
+
+        /// <summary>
+        /// The <see cref="MetricPoint"/> is stale and can be reclaimed.
+        /// </summary>
+        Stale,
     }
 }

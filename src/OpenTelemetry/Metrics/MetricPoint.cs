@@ -92,6 +92,8 @@ namespace OpenTelemetry.Metrics
         /// </summary>
         public readonly DateTimeOffset EndTime => this.aggregatorStore.EndTimeInclusive;
 
+        public void MarkAsStale() => MetricPointStatus = MetricPointStatus.Stale; // for now.
+
         internal MetricPointStatus MetricPointStatus
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -409,7 +411,7 @@ namespace OpenTelemetry.Metrics
             this.MetricPointStatus = MetricPointStatus.CollectPending;
         }
 
-        internal void TakeSnapshot(bool outputDelta)
+        internal void TakeSnapshot(bool outputDelta, bool isObserved)
         {
             switch (this.aggType)
             {
@@ -654,6 +656,12 @@ namespace OpenTelemetry.Metrics
                         break;
                     }
             }
+
+            // Observable instruments are marked as stale. If the value is not observed
+            // in a subsequent collect cycle, the metric point can be reclaimed.
+            // This is safe because observable gauges are always queried synchronously during the
+            // Collect cycle. This cannot be used for regular instruments.
+            if (isObserved) this.MetricPointStatus = MetricPointStatus.Stale;
         }
 
         private void UpdateHistogram(double number)
