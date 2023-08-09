@@ -92,8 +92,6 @@ namespace OpenTelemetry.Metrics
         /// </summary>
         public readonly DateTimeOffset EndTime => this.aggregatorStore.EndTimeInclusive;
 
-        public void MarkAsStale() => MetricPointStatus = MetricPointStatus.Stale; // for now.
-
         internal MetricPointStatus MetricPointStatus
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -270,6 +268,9 @@ namespace OpenTelemetry.Metrics
             copy.histogramBuckets = this.histogramBuckets?.Copy();
             return copy;
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void MarkAsStale() => this.MetricPointStatus = MetricPointStatus.Stale; // for now.
 
         internal void Update(long number)
         {
@@ -661,7 +662,10 @@ namespace OpenTelemetry.Metrics
             // in a subsequent collect cycle, the metric point can be reclaimed.
             // This is safe because observable gauges are always queried synchronously during the
             // Collect cycle. This cannot be used for regular instruments.
-            if (isObserved) this.MetricPointStatus = MetricPointStatus.Stale;
+            if (isObserved)
+            {
+                this.MarkAsStale();
+            }
         }
 
         private void UpdateHistogram(double number)

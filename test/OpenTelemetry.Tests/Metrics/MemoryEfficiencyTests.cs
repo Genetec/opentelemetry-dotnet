@@ -97,7 +97,6 @@ namespace OpenTelemetry.Metrics.Tests
                 }
 
                 Assert.Equal(2, i);
-
             });
 
             exportedItems.Clear();
@@ -115,7 +114,6 @@ namespace OpenTelemetry.Metrics.Tests
                 }
 
                 Assert.Equal(2, i);
-
             });
 
             measurements.Clear();
@@ -124,13 +122,12 @@ namespace OpenTelemetry.Metrics.Tests
             // Last collect has []. No measurements observed, everything is reclaimed..
             meterProvider.ForceFlush();
             Assert.Empty(exportedItems);
-
         }
 
         // Does this even need to be tested? There's probably some overlap with existing tests.
-        public void Instrument_DataPointsAreNotReclaimed()
-        {
-            // TODO
-        }
+        // public void Instrument_DataPointsAreNotReclaimed()
+        // {
+        //    // TODO
+        // }
     }
 }

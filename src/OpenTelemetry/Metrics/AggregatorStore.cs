@@ -31,7 +31,7 @@ namespace OpenTelemetry.Metrics
         private readonly ConcurrentDictionary<Tags, int> tagsToMetricPointIndexDictionary =
             new();
 
-        private string name => this.id.InstrumentName; // [alxbl] TODO: Aggressive inlining if this works.
+        private readonly string name;
         private readonly string metricPointCapHitMessage;
         private readonly bool outputDelta;
         private readonly MetricPoint[] metricPoints;
@@ -41,13 +41,12 @@ namespace OpenTelemetry.Metrics
         private readonly UpdateLongDelegate updateLongCallback;
         private readonly UpdateDoubleDelegate updateDoubleCallback;
         private readonly int maxMetricPoints;
+        private readonly MetricStreamIdentity id; // FIXME: This should be only what we need to keep the constructor simple.
         private ConcurrentQueue<int> free; // List for now: TODO: use arrays for efficiency/lockfree?
         private int metricPointIndex = 0;
         private int batchSize = 0;
         private int metricCapHitMessageLogged;
         private bool zeroTagMetricPointInitialized;
-
-        private MetricStreamIdentity id;
 
         internal AggregatorStore(
             MetricStreamIdentity id,
@@ -57,6 +56,7 @@ namespace OpenTelemetry.Metrics
             double[] histogramBounds,
             string[] tagKeysInteresting = null)
         {
+            this.name = id.InstrumentName;
             this.id = id;
             this.maxMetricPoints = maxMetricPoints;
             this.metricPointCapHitMessage = $"Maximum MetricPoints limit reached for this Metric stream. Configured limit: {this.maxMetricPoints}";
@@ -131,7 +131,7 @@ namespace OpenTelemetry.Metrics
                 // during this Collect cycle. For observable instruments, this means that the point can be reclaimed.
                 if (metricPoint.MetricPointStatus == MetricPointStatus.Stale /* && this.id.IsObservable */)
                 {
-                    ReclaimMetricPoint(ref metricPoint, i);
+                    this.ReclaimMetricPoint(ref metricPoint, i);
                     continue;
                 }
 
@@ -161,7 +161,7 @@ namespace OpenTelemetry.Metrics
                 // during this Collect cycle. For observable instruments, this means that the point can be reclaimed.
                 if (metricPoint.MetricPointStatus == MetricPointStatus.Stale /* && this.id.IsObservable */)
                 {
-                    ReclaimMetricPoint(ref metricPoint, i);
+                    this.ReclaimMetricPoint(ref metricPoint, i);
                     continue;
                 }
 
@@ -175,7 +175,7 @@ namespace OpenTelemetry.Metrics
         internal MetricPointsAccessor GetMetricPoints()
             => new(this.metricPoints, this.currentMetricPointBatch, this.batchSize);
 
-       internal void ReclaimMetricPoint(ref  MetricPoint metricPoint, int idx)
+        internal void ReclaimMetricPoint(ref MetricPoint metricPoint, int idx)
         {
             if (this.free == null)
             {
@@ -185,8 +185,15 @@ namespace OpenTelemetry.Metrics
             // Free list is available: add the index of this point to it and remove the tag lookup entry.
             this.free.Enqueue(idx);
 
-            // TODO: Remove point from the tags lookup dictionary
-            // build tags and perform removal
+            var tagList = new KeyValuePair<string, object>[metricPoint.Tags.Count]; // TODO: There must be a better way to do this.
+            var i = 0;
+            foreach (var tag in metricPoint.Tags)
+            {
+                tagList[i] = tag;
+            }
+
+            var tags = new Tags(tagList);
+            this.tagsToMetricPointIndexDictionary.TryRemove(tags, out var _); // TODO: Lock?
         }
 
         private void BuildFreeListSlow()
@@ -260,12 +267,12 @@ namespace OpenTelemetry.Metrics
                                 {
                                     if (this.free == null)
                                     {
-                                        BuildFreeListSlow();
+                                        this.BuildFreeListSlow();
                                     }
                                 }
                             }
 
-                            if (this.free.Count == 0)
+                            if (this.free.IsEmpty)
                             {
                                 // sorry! out of data points.
                                 // TODO: Once we support cleanup of
@@ -305,6 +312,7 @@ namespace OpenTelemetry.Metrics
                                         // we can re-claim them here.
                                         return -1;
                                     }
+
                                     aggregatorIndex = freeIdx; // Re-use the free slot
                                 }
 
@@ -335,12 +343,12 @@ namespace OpenTelemetry.Metrics
                             {
                                 if (this.free == null)
                                 {
-                                    BuildFreeListSlow();
+                                    this.BuildFreeListSlow();
                                 }
                             }
                         }
 
-                        if (this.free.Count == 0)
+                        if (this.free.IsEmpty)
                         {
                             // sorry! out of data points.
                             // TODO: Once we support cleanup of
