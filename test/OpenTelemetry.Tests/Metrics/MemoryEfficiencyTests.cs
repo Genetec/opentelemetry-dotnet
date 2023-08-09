@@ -59,7 +59,7 @@ namespace OpenTelemetry.Metrics.Tests
 
         [Theory]
         [InlineData(MetricReaderTemporalityPreference.Cumulative)]
-        // [InlineData(MetricReaderTemporalityPreference.Delta)]
+        [InlineData(MetricReaderTemporalityPreference.Delta)]
         public void ObservableInstrument_ReclaimDataPointsWhenUnobserved(MetricReaderTemporalityPreference temporality)
         {
             using var meter = new Meter($"{Utils.GetCurrentMethodName()}.{temporality}");
@@ -67,7 +67,7 @@ namespace OpenTelemetry.Metrics.Tests
             var exportedItems = new List<Metric>();
 
             using var meterProvider = Sdk.CreateMeterProviderBuilder()
-                .SetMaxMetricPointsPerMetricStream(2)
+                .SetMaxMetricPointsPerMetricStream(3) // metricPoints[0] is always reserved for tagless metric, so we need 3 points max.
                 .AddMeter(meter.Name)
                 .AddInMemoryExporter(exportedItems, (metricReaderOptions) =>
                 {
@@ -83,7 +83,7 @@ namespace OpenTelemetry.Metrics.Tests
                 new(3, new KeyValuePair<string, object>[] { new("name", "c"), new("n", 3) }),
             };
 
-            var counter = meter.CreateObservableGauge<long>("meter", () => measurements);
+            var counter = meter.CreateObservableGauge("meter", () => measurements);
 
             // First collect has [1, 2]. 3 is not exported because no data points are available.
             meterProvider.ForceFlush();
@@ -100,30 +100,30 @@ namespace OpenTelemetry.Metrics.Tests
 
             });
 
-            // exportedItems.Clear();
-            // measurements.RemoveAt(1); // [1, 3]
+            exportedItems.Clear();
+            measurements.RemoveAt(1); // [1, 3]
 
-            // // Second collect has [1, 3]. 2 is no longer exported and 3 re-claims its data point.
-            // meterProvider.ForceFlush();
-            // Assert.Collection(exportedItems, metric =>
-            // {
-            //     // Assert.Equal(metric.Snapshot(), 2); // If we snapshot, it won't work.
-            //     int i = 0;
-            //     foreach (ref readonly var metricPoint in metric.GetMetricPoints())
-            //     {
-            //         Assert.Equal(measurements[i++].Value, metricPoint.GetGaugeLastValueLong());
-            //     }
+            // Second collect has [1, 3]. 2 is no longer exported and 3 re-claims its data point.
+            meterProvider.ForceFlush();
+            Assert.Collection(exportedItems, metric =>
+            {
+                // Assert.Equal(metric.Snapshot(), 2); // If we snapshot, it won't work.
+                int i = 0;
+                foreach (ref readonly var metricPoint in metric.GetMetricPoints())
+                {
+                    Assert.Equal(measurements[i++].Value, metricPoint.GetGaugeLastValueLong());
+                }
 
-            //     Assert.Equal(2, i);
+                Assert.Equal(2, i);
 
-            // });
+            });
 
-            // measurements.Clear();
-            // exportedItems.Clear();
+            measurements.Clear();
+            exportedItems.Clear();
 
-            // // Last collect has []. No measurements observed, everything is reclaimed..
-            // meterProvider.ForceFlush();
-            // Assert.Empty(exportedItems);
+            // Last collect has []. No measurements observed, everything is reclaimed..
+            meterProvider.ForceFlush();
+            Assert.Empty(exportedItems);
 
         }
 
