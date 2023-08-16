@@ -32,16 +32,14 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
         private static readonly ConcurrentBag<OtlpMetrics.ScopeMetrics> MetricListPool = new();
         private static readonly Action<RepeatedField<OtlpMetrics.Metric>, int> RepeatedFieldOfMetricSetCountAction = CreateRepeatedFieldOfMetricSetCountAction();
 
-        // [abeaulieu] Overload which takes a pre-converted OtlpMetrics object.
         internal static void AddMetrics(
             this OtlpCollector.ExportMetricsServiceRequest request,
             OtlpResource.Resource processResource,
             in OtlpMetrics.Metric otlpMetric,
-            in Metric metric) // [abeaulieu] [PERF] need the original metric to set the resources stuff. Technically we could build this once and clone the message.
+            in Metric metric)
         {
             var metricsByLibrary = new Dictionary<string, OtlpMetrics.ScopeMetrics>();
 
-            // Only add the process resource once per request.
             if (request.ResourceMetrics.Count == 0)
             {
                 var r = new OtlpMetrics.ResourceMetrics
@@ -52,7 +50,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                 request.ResourceMetrics.Add(r);
             }
 
-            var resourceMetrics = request.ResourceMetrics[0]; // FIXME: This is ugly but it works for testing.
+            var resourceMetrics = request.ResourceMetrics.FirstOrDefault();
 
             // TODO: Replace null check with exception handling.
             if (otlpMetric == null)
@@ -138,8 +136,8 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                 {
                     Scope = new OtlpCommon.InstrumentationScope
                     {
-                        Name = name, // Name is enforced to not be null, but it can be empty.
-                        Version = version ?? string.Empty, // NRE throw by proto
+                        Name = name,
+                        Version = version ?? string.Empty,
                     },
                 };
             }
@@ -172,13 +170,12 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
             return otlpMetric;
         }
 
-        // [abeaulieu] Attempting to batch data points per metric.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static IEnumerable<OtlpMetrics.Metric> ToBatchedOtlpMetric(this Metric metric, int batchSize = 15000)
         {
             List<OtlpMetrics.Metric> metrics = new();
+            var currentBatch = 0;
 
-            // Keep this here since it won't change for this metric.
             OtlpMetrics.AggregationTemporality temporality;
             if (metric.Temporality == AggregationTemporality.Delta)
             {
@@ -189,7 +186,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                 temporality = OtlpMetrics.AggregationTemporality.Cumulative;
             }
 
-            var otlpMetric = GetMetric(metric); // In the best case, this only requires one metric message.
+            var otlpMetric = GetMetric(metric);
 
             switch (metric.MetricType)
             {
@@ -204,19 +201,24 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
 
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            currentBatch++;
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsInt = metricPoint.GetSumLong();
                             sum.DataPoints.Add(dataPoint);
+
+                            if (currentBatch >= batchSize)
+                            {
+                                OffLoadMetricSum(metric, metrics, ref otlpMetric, ref sum);
+                                currentBatch = 0;
+                            }
                         }
 
-                        otlpMetric.Sum = sum;
+                        if (currentBatch > 0)
+                        {
+                            otlpMetric.Sum = sum;
+                            metrics.Add(otlpMetric);
+                        }
+
                         break;
                     }
 
@@ -231,51 +233,48 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
 
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            currentBatch++;
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsDouble = metricPoint.GetSumDouble();
                             sum.DataPoints.Add(dataPoint);
+
+                            if (currentBatch >= batchSize)
+                            {
+                                OffLoadMetricSum(metric, metrics, ref otlpMetric, ref sum);
+                                currentBatch = 0;
+                            }
                         }
 
-                        otlpMetric.Sum = sum;
+                        if (currentBatch > 0)
+                        {
+                            otlpMetric.Sum = sum;
+                            metrics.Add(otlpMetric);
+                        }
+
                         break;
                     }
 
                 case MetricType.LongGauge:
                     {
-                        // FIXME: Cleanup
                         var gauge = new OtlpMetrics.Gauge();
-                        var curBatch = 0; // Keep a local copy here for performance.
-
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-                            curBatch++;
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            currentBatch++;
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsInt = metricPoint.GetGaugeLastValueLong();
                             gauge.DataPoints.Add(dataPoint);
 
-                            if (curBatch >= batchSize)
+                            if (currentBatch >= batchSize)
                             {
-                                // This batch is full, let's offload it and create a new metric message.
-                                otlpMetric.Gauge = gauge;
-                                metrics.Add(otlpMetric);
-                                gauge = new OtlpMetrics.Gauge(); // Create a fresh gauge to store the data points.
-                                otlpMetric = GetMetric(metric); // Get a fresh message.
-                                curBatch = 0;
+                                OffLoadMetricGauge(metric, metrics, ref otlpMetric, ref gauge);
+                                currentBatch = 0;
                             }
+                        }
+
+                        if (currentBatch > 0)
+                        {
+                            otlpMetric.Gauge = gauge;
+                            metrics.Add(otlpMetric);
                         }
 
                         break;
@@ -286,19 +285,24 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                         var gauge = new OtlpMetrics.Gauge();
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            currentBatch++;
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsDouble = metricPoint.GetGaugeLastValueDouble();
                             gauge.DataPoints.Add(dataPoint);
+
+                            if (currentBatch >= batchSize)
+                            {
+                                OffLoadMetricGauge(metric, metrics, ref otlpMetric, ref gauge);
+                                currentBatch = 0;
+                            }
                         }
 
-                        otlpMetric.Gauge = gauge;
+                        if (currentBatch > 0)
+                        {
+                            otlpMetric.Gauge = gauge;
+                            metrics.Add(otlpMetric);
+                        }
+
                         break;
                     }
 
@@ -311,13 +315,8 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
 
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.HistogramDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
+                            currentBatch++;
+                            var dataPoint = GetHistogramDataPoint(metricPoint);
                             dataPoint.Count = (ulong)metricPoint.GetHistogramCount();
                             dataPoint.Sum = metricPoint.GetHistogramSum();
 
@@ -337,9 +336,20 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                             }
 
                             histogram.DataPoints.Add(dataPoint);
+
+                            if (currentBatch >= batchSize)
+                            {
+                                OffLoadMetricHistogram(metric, metrics, temporality, ref otlpMetric, ref histogram);
+                                currentBatch = 0;
+                            }
                         }
 
-                        otlpMetric.Histogram = histogram;
+                        if (currentBatch > 0)
+                        {
+                            otlpMetric.Histogram = histogram;
+                            metrics.Add(otlpMetric);
+                        }
+
                         break;
                     }
             }
@@ -388,14 +398,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
 
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsInt = metricPoint.GetSumLong();
                             sum.DataPoints.Add(dataPoint);
                         }
@@ -415,14 +418,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
 
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsDouble = metricPoint.GetSumDouble();
                             sum.DataPoints.Add(dataPoint);
                         }
@@ -436,14 +432,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                         var gauge = new OtlpMetrics.Gauge();
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsInt = metricPoint.GetGaugeLastValueLong();
                             gauge.DataPoints.Add(dataPoint);
                         }
@@ -457,14 +446,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                         var gauge = new OtlpMetrics.Gauge();
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.NumberDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
-
+                            var dataPoint = GetNumberDataPoint(metricPoint);
                             dataPoint.AsDouble = metricPoint.GetGaugeLastValueDouble();
                             gauge.DataPoints.Add(dataPoint);
                         }
@@ -482,13 +464,7 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
 
                         foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                         {
-                            var dataPoint = new OtlpMetrics.HistogramDataPoint
-                            {
-                                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
-                                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
-                            };
-
-                            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
+                            var dataPoint = GetHistogramDataPoint(metricPoint);
                             dataPoint.Count = (ulong)metricPoint.GetHistogramCount();
                             dataPoint.Sum = metricPoint.GetHistogramSum();
 
@@ -518,6 +494,57 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
             return otlpMetric;
         }
 
+        private static void OffLoadMetricHistogram(Metric metric, List<OtlpMetrics.Metric> metrics, OtlpMetrics.AggregationTemporality temporality, ref OtlpMetrics.Metric otlpMetric, ref OtlpMetrics.Histogram histogram)
+        {
+            otlpMetric.Histogram = histogram;
+            metrics.Add(otlpMetric);
+            histogram = new OtlpMetrics.Histogram
+            {
+                AggregationTemporality = temporality,
+            };
+            otlpMetric = GetMetric(metric);
+        }
+
+        private static void OffLoadMetricSum(Metric metric, List<OtlpMetrics.Metric> metrics, ref OtlpMetrics.Metric otlpMetric, ref OtlpMetrics.Sum sum)
+        {
+            otlpMetric.Sum = sum;
+            metrics.Add(otlpMetric);
+            sum = new OtlpMetrics.Sum();
+            otlpMetric = GetMetric(metric);
+        }
+
+        private static void OffLoadMetricGauge(Metric metric, List<OtlpMetrics.Metric> metrics, ref OtlpMetrics.Metric otlpMetric, ref OtlpMetrics.Gauge gauge)
+        {
+            otlpMetric.Gauge = gauge;
+            metrics.Add(otlpMetric);
+            gauge = new OtlpMetrics.Gauge();
+            otlpMetric = GetMetric(metric);
+        }
+
+        private static OtlpMetrics.HistogramDataPoint GetHistogramDataPoint(MetricPoint metricPoint)
+        {
+            var dataPoint = new OtlpMetrics.HistogramDataPoint
+            {
+                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
+                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
+            };
+
+            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
+            return dataPoint;
+        }
+
+        private static OtlpMetrics.NumberDataPoint GetNumberDataPoint(MetricPoint metricPoint)
+        {
+            var dataPoint = new OtlpMetrics.NumberDataPoint
+            {
+                StartTimeUnixNano = (ulong)metricPoint.StartTime.ToUnixTimeNanoseconds(),
+                TimeUnixNano = (ulong)metricPoint.EndTime.ToUnixTimeNanoseconds(),
+            };
+
+            AddAttributes(metricPoint.Tags, dataPoint.Attributes);
+            return dataPoint;
+        }
+
         private static void AddAttributes(ReadOnlyTagCollection tags, RepeatedField<OtlpCommon.KeyValue> attributes)
         {
             foreach (var tag in tags)
@@ -528,54 +555,6 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
                 }
             }
         }
-
-        /*
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static OtlpMetrics.Exemplar ToOtlpExemplar(this IExemplar exemplar)
-        {
-            var otlpExemplar = new OtlpMetrics.Exemplar();
-
-            if (exemplar.Value is double doubleValue)
-            {
-                otlpExemplar.AsDouble = doubleValue;
-            }
-            else if (exemplar.Value is long longValue)
-            {
-                otlpExemplar.AsInt = longValue;
-            }
-            else
-            {
-                // TODO: Determine how we want to handle exceptions here.
-                // Do we want to just skip this exemplar and move on?
-                // Should we skip recording the whole metric?
-                throw new ArgumentException();
-            }
-
-            otlpExemplar.TimeUnixNano = (ulong)exemplar.Timestamp.ToUnixTimeNanoseconds();
-
-            // TODO: Do the TagEnumerationState thing.
-            foreach (var tag in exemplar.FilteredTags)
-            {
-                otlpExemplar.FilteredAttributes.Add(tag.ToOtlpAttribute());
-            }
-
-            if (exemplar.TraceId != default)
-            {
-                byte[] traceIdBytes = new byte[16];
-                exemplar.TraceId.CopyTo(traceIdBytes);
-                otlpExemplar.TraceId = UnsafeByteOperations.UnsafeWrap(traceIdBytes);
-            }
-
-            if (exemplar.SpanId != default)
-            {
-                byte[] spanIdBytes = new byte[8];
-                exemplar.SpanId.CopyTo(spanIdBytes);
-                otlpExemplar.SpanId = UnsafeByteOperations.UnsafeWrap(spanIdBytes);
-            }
-
-            return otlpExemplar;
-        }
-        */
 
         private static Action<RepeatedField<OtlpMetrics.Metric>, int> CreateRepeatedFieldOfMetricSetCountAction()
         {
