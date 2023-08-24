@@ -51,8 +51,20 @@ namespace OpenTelemetry.Exporter
         private const string DefaultHttpEndpoint = "http://localhost:4318";
         private const OtlpExportProtocol DefaultOtlpExportProtocol = OtlpExportProtocol.Grpc;
         private const string UserAgentProduct = "OTel-OTLP-Exporter-Dotnet";
+        private const int DefaultDataPointBatchSize = 15000;
+        private const int DefaultDataPointBatchExportInterval = 0;
 
         private Uri endpoint;
+
+        private int dataPointBatchSize;
+
+        private bool dataPointBatchingEnabled = false;
+
+        private int dataPointBatchExportInterval;
+
+        private int maxJitter;
+
+        private int minJitter;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="OtlpExporterOptions"/> class.
@@ -128,6 +140,106 @@ namespace OpenTelemetry.Exporter
             {
                 this.endpoint = value;
                 this.ProgrammaticallyModifiedEndpoint = true;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the batch size for datapoint batching.
+        /// </summary>
+        public int DataPointBatchSize
+        {
+            get
+            {
+                if (this.dataPointBatchSize <= 0)
+                {
+                    this.dataPointBatchSize = DefaultDataPointBatchSize;
+                }
+
+                return this.dataPointBatchSize;
+            }
+
+            set
+            {
+                this.dataPointBatchSize = value <= 0 ? DefaultDataPointBatchSize : value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether datapoint batching is enabled or not.
+        /// </summary>
+        public bool DataPointBatchingEnabled
+        {
+            get
+            {
+                return this.dataPointBatchingEnabled;
+            }
+
+            set
+            {
+                this.dataPointBatchingEnabled = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets a value indicating the base jitter (in ms) we want to apply to export requests.
+        /// </summary>
+        public int DataPointBatchExportInterval
+        {
+            get
+            {
+                if (this.dataPointBatchExportInterval < 0)
+                {
+                    this.dataPointBatchExportInterval = DefaultDataPointBatchExportInterval;
+                }
+
+                return this.dataPointBatchExportInterval;
+            }
+
+            set
+            {
+                this.dataPointBatchExportInterval = value < 0 ? DefaultDataPointBatchExportInterval : value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets a value indicating the min jitter (in ms) we want to apply to export requests.
+        /// </summary>
+        public int MinJitter
+        {
+            get
+            {
+                if (this.minJitter < 0)
+                {
+                    this.minJitter = 0;
+                }
+
+                return this.minJitter;
+            }
+
+            set
+            {
+                this.minJitter = value < 0 ? 0 : value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets a value indicating the max jitter (in ms) we want to apply to export requests.
+        /// </summary>
+        public int MaxJitter
+        {
+            get
+            {
+                if (this.maxJitter < this.minJitter)
+                {
+                    this.maxJitter = this.minJitter + 1000; // Separate min and max jitter by at least 1 second
+                }
+
+                return this.maxJitter;
+            }
+
+            set
+            {
+                this.maxJitter = value < this.minJitter ? this.minJitter + 1000 : value; // Separate min and max jitter by at least 1 second
             }
         }
 

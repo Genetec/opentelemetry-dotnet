@@ -30,7 +30,19 @@ namespace OpenTelemetry.Exporter
     /// </summary>
     public class OtlpMetricExporter : BaseExporter<Metric>
     {
+        private static readonly Random Random = new();
+
         private readonly IExportClient<OtlpCollector.ExportMetricsServiceRequest> exportClient;
+
+        private readonly int dataPointBatchSize;
+
+        private readonly bool dataPointbatchingEnabled;
+
+        private readonly int dataPointBatchExportInterval;
+
+        private readonly int maxJitter;
+
+        private readonly int minJitter;
 
         private OtlpResource.Resource processResource;
 
@@ -58,6 +70,12 @@ namespace OpenTelemetry.Exporter
             {
                 this.exportClient = options.GetMetricsExportClient();
             }
+
+            this.dataPointBatchSize = options.DataPointBatchSize;
+            this.dataPointbatchingEnabled = options.DataPointBatchingEnabled;
+            this.dataPointBatchExportInterval = options.DataPointBatchExportInterval;
+            this.maxJitter = options.MaxJitter;
+            this.minJitter = options.MinJitter;
         }
 
         internal OtlpResource.Resource ProcessResource => this.processResource ??= this.ParentProvider.GetResource().ToOtlpResource();
@@ -65,49 +83,64 @@ namespace OpenTelemetry.Exporter
         /// <inheritdoc />
         public override ExportResult Export(in Batch<Metric> metrics)
         {
+            // Prevents the exporter's gRPC and HTTP operations from being instrumented.
             using var scope = SuppressInstrumentationScope.Begin();
 
+            // [Performance] Need to allow for a message with partial data points but several metrics so we can still batch metrics in a single message
+            //               and minimize the amount of requests to transmit all the data.
             var perMetricBatches = ArrayPool<List<OtlpMetrics.Metric>>.Shared.Rent((int)metrics.Count);
-            var meterNames = ArrayPool<Metric>.Shared.Rent((int)metrics.Count);
+            var allMetrics = ArrayPool<Metric>.Shared.Rent((int)metrics.Count);
 
             var i = 0;
             foreach (var metric in metrics)
             {
-                perMetricBatches[i] = metric.ToBatchedOtlpMetric().ToList();
-                meterNames[i] = metric;
+                perMetricBatches[i] = metric.ToOtlpMetric(this.dataPointBatchSize, this.dataPointbatchingEnabled).ToList();
+                allMetrics[i] = metric;
                 ++i;
             }
 
-            var done = false;
-            var num_msg = 0;
-            while (!done)
+            // [abeaulieu] Now loop through all the metrics until we've sent all the messages to send
+            OtlpCollector.ExportMetricsServiceRequest request;
+            bool mustWait = false;
+            do
             {
-                var request = new OtlpCollector.ExportMetricsServiceRequest();
-
-                for (i = 0; i < perMetricBatches.Length; ++i)
+                var currentBatchSize = 0;
+                request = null;
+                for (i = 0; i < metrics.Count; ++i)
                 {
-                    done = true;
-
                     var messages = perMetricBatches[i];
                     if (messages.Count > 0)
                     {
-                        var m = messages[messages.Count - 1];
-                        messages.RemoveAt(messages.Count - 1);
-                        request.AddMetrics(this.ProcessResource, m, meterNames[i]);
-                        done = false;
-                        num_msg++;
+                        request ??= new OtlpCollector.ExportMetricsServiceRequest();
+                        var m = messages[messages.Count - 1]; // Take the last one so there's no need to list copy to shift the list left.
+                        var dataPointCount = m.GetDataPointCount();
+
+                        if (currentBatchSize + dataPointCount <= this.dataPointBatchSize) // if the current message fits in the request
+                        {
+                            currentBatchSize += dataPointCount;
+                            messages.RemoveAt(messages.Count - 1); // [Perf]: Use a queue or just index manipulation to avoid memory shenanigans.
+                            mustWait |= messages.Count > 0;
+                            request.AddMetrics(this.ProcessResource, m, allMetrics[i]);
+                        }
+                        else
+                        {
+                            mustWait = true;
+                            continue;
+                        }
                     }
                 }
 
                 try
                 {
-                    if (!this.exportClient.SendExportRequest(request))
+                    if (request != null && !this.exportClient.SendExportRequest(request))
                     {
                         return ExportResult.Failure;
                     }
-                    else
+
+                    if (mustWait && this.dataPointBatchExportInterval > 0)
                     {
-                        Thread.Sleep(1000);
+                        var delay = this.dataPointBatchExportInterval + Random.Next(this.minJitter, this.maxJitter);
+                        Thread.Sleep(delay);
                     }
                 }
                 catch (Exception ex)
@@ -118,10 +151,12 @@ namespace OpenTelemetry.Exporter
                 finally
                 {
                     ArrayPool<List<OtlpMetrics.Metric>>.Shared.Return(perMetricBatches);
-                    ArrayPool<Metric>.Shared.Return(meterNames);
-                    request.Return();
+                    ArrayPool<Metric>.Shared.Return(allMetrics);
+                    request?.Return();
+                    mustWait = false;
                 }
             }
+            while (request != null);
 
             return ExportResult.Success;
         }

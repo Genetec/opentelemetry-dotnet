@@ -16,7 +16,9 @@
 
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation;
+using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation.ExportClient;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Tests;
@@ -166,6 +168,114 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Tests
             var meterProvider = serviceProvider.GetRequiredService<MeterProvider>();
 
             Assert.Equal(1, invocations);
+        }
+
+        [Fact]
+        public void TestDataPointsCountAndBatchSizeAreEqual_CreatesOnlyOneBatch()
+        {
+            var batchSize = 2;
+            var metrics = new List<Metric>();
+            using var meter = new Meter(Utils.GetCurrentMethodName());
+            using var provider = Sdk.CreateMeterProviderBuilder()
+                .AddMeter(meter.Name)
+                .AddInMemoryExporter(metrics)
+                .Build();
+
+            var dataPoints = new List<Measurement<int>>(2);
+            for (int i = 0; i < dataPoints.Capacity; i++)
+            {
+                var point = new Measurement<int>(i, new KeyValuePair<string, object>(i.ToString(), i));
+                dataPoints.Add(point);
+            }
+
+            meter.CreateObservableGauge("test_gauge", () => dataPoints);
+
+            provider.ForceFlush();
+
+            var metric = metrics.First();
+            var otlpMetrics = metric.ToOtlpMetric(batchSize);
+
+            Assert.Single(otlpMetrics);
+        }
+
+        [Fact]
+        public void TestLeftoverDataPoints_AreAlsoBatched()
+        {
+            var batchSize = 2;
+            var metrics = new List<Metric>();
+            using var meter = new Meter(Utils.GetCurrentMethodName());
+            using var provider = Sdk.CreateMeterProviderBuilder()
+                .AddMeter(meter.Name)
+                .AddInMemoryExporter(metrics)
+                .Build();
+
+            var dataPoints = new List<Measurement<int>>(3);
+            for (int i = 0; i < dataPoints.Capacity; i++)
+            {
+                var point = new Measurement<int>(i, new KeyValuePair<string, object>(i.ToString(), i));
+                dataPoints.Add(point);
+            }
+
+            meter.CreateObservableGauge("test_gauge", () => dataPoints);
+
+            provider.ForceFlush();
+            var metric = metrics.First();
+
+            var otlpMetrics = metric.ToOtlpMetric(batchSize);
+
+            Assert.Equal(batchSize, otlpMetrics.First().Gauge.DataPoints.Count);
+            Assert.Single(otlpMetrics.Last().Gauge.DataPoints);
+        }
+
+        [Theory]
+        [InlineData(6, 3, 3, 1)]
+        [InlineData(2, 3, 3, 3)]
+        [InlineData(10, 10, 5, 2)]
+        public void TestNumberOfExportMetricsServiceRequestSent(int batchSize, int m1NumDataPoints, int m2NumDataPoints, int times)
+        {
+            var exportClientMock = new Mock<IExportClient<OtlpCollector.ExportMetricsServiceRequest>>();
+            exportClientMock.Setup(m => m.SendExportRequest(It.IsAny<OtlpCollector.ExportMetricsServiceRequest>(), CancellationToken.None)).Returns(true);
+
+            var options = new OtlpExporterOptions
+            {
+                DataPointBatchSize = batchSize,
+                DataPointBatchingEnabled = true,
+            };
+            var exporter = new OtlpMetricExporter(options, exportClientMock.Object);
+
+            var metrics = new List<Metric>();
+            using var meter = new Meter(Utils.GetCurrentMethodName());
+            using var provider = Sdk.CreateMeterProviderBuilder()
+                .AddMeter(meter.Name)
+                .AddInMemoryExporter(metrics)
+                .Build();
+
+            var dataPoints1 = new List<Measurement<int>>(m1NumDataPoints);
+            var dataPoints2 = new List<Measurement<int>>(m2NumDataPoints);
+            for (int i = 0; i < m1NumDataPoints; i++)
+            {
+                var point = new Measurement<int>(i, new KeyValuePair<string, object>(i.ToString(), i));
+                dataPoints1.Add(point);
+            }
+
+            for (int i = 0; i < m2NumDataPoints; i++)
+            {
+                var point = new Measurement<int>(i, new KeyValuePair<string, object>(i.ToString(), i));
+                dataPoints2.Add(point);
+            }
+
+            meter.CreateObservableGauge("first", () => dataPoints1);
+            meter.CreateObservableGauge("second", () => dataPoints2);
+
+            provider.ForceFlush();
+
+            var m1 = metrics[0];
+            var m2 = metrics[1];
+
+            var batch = new Batch<Metric>(new Metric[] { m1, m2 }, 2);
+
+            exporter.Export(batch);
+            exportClientMock.Verify(m => m.SendExportRequest(It.IsAny<OtlpCollector.ExportMetricsServiceRequest>(), CancellationToken.None), Times.Exactly(times));
         }
 
         [Theory]
