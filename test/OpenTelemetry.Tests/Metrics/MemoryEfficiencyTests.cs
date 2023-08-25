@@ -67,7 +67,7 @@ namespace OpenTelemetry.Metrics.Tests
             var exportedItems = new List<Metric>();
 
             using var meterProvider = Sdk.CreateMeterProviderBuilder()
-                .SetMaxMetricPointsPerMetricStream(3) // metricPoints[0] is always reserved for tagless metric, so we need 3 points max.
+                .SetMaxMetricPointsPerMetricStream(3) // metricPoints[0] is always reserved for tagless metric, so set 3 points max.
                 .AddMeter(meter.Name)
                 .AddInMemoryExporter(exportedItems, (metricReaderOptions) =>
                 {
@@ -85,49 +85,55 @@ namespace OpenTelemetry.Metrics.Tests
 
             var counter = meter.CreateObservableGauge("meter", () => measurements);
 
-            // First collect has [1, 2]. 3 is not exported because no data points are available.
-            meterProvider.ForceFlush();
-            Assert.Collection(exportedItems, metric =>
+            void ValidateMetricDataPoints(Metric metric)
             {
-                // Assert.Equal(metric.Snapshot(), 2); // If we snapshot, it won't work.
                 int i = 0;
                 foreach (ref readonly var metricPoint in metric.GetMetricPoints())
                 {
-                    Assert.Equal(measurements[i++].Value, metricPoint.GetGaugeLastValueLong());
+                    var measurement = measurements[i++];
+
+                    var tags = new Dictionary<string, object>();
+                    foreach (var tag in metricPoint.Tags)
+                    {
+                        tags[tag.Key] = tag.Value;
+                    }
+
+                    var expectedTags = new Dictionary<string, object>();
+                    foreach (var tag in measurement.Tags)
+                    {
+                        expectedTags[tag.Key] = tag.Value;
+                    }
+
+                    // Verify value.
+                    Assert.Equal(measurement.Value, metricPoint.GetGaugeLastValueLong());
+
+                    // Verify tags.
+                    foreach (var kv in tags)
+                    {
+                        Assert.Equal(expectedTags[kv.Key], kv.Value);
+                    }
                 }
 
                 Assert.Equal(2, i);
-            });
+            }
+
+            // First collect has [1, 2]. 3 is not exported because no data points are available.
+            meterProvider.ForceFlush();
+            Assert.Collection(exportedItems, ValidateMetricDataPoints);
 
             exportedItems.Clear();
             measurements.RemoveAt(1); // [1, 3]
 
             // Second collect has [1, 3]. 2 is no longer exported and 3 re-claims its data point.
             meterProvider.ForceFlush();
-            Assert.Collection(exportedItems, metric =>
-            {
-                // Assert.Equal(metric.Snapshot(), 2); // If we snapshot, it won't work.
-                int i = 0;
-                foreach (ref readonly var metricPoint in metric.GetMetricPoints())
-                {
-                    Assert.Equal(measurements[i++].Value, metricPoint.GetGaugeLastValueLong());
-                }
-
-                Assert.Equal(2, i);
-            });
+            Assert.Collection(exportedItems, ValidateMetricDataPoints);
 
             measurements.Clear();
             exportedItems.Clear();
 
-            // Last collect has []. No measurements observed, everything is reclaimed..
+            // Last collect has []. No measurements observed, everything is reclaimed.
             meterProvider.ForceFlush();
             Assert.Empty(exportedItems);
         }
-
-        // Does this even need to be tested? There's probably some overlap with existing tests.
-        // public void Instrument_DataPointsAreNotReclaimed()
-        // {
-        //    // TODO
-        // }
     }
 }

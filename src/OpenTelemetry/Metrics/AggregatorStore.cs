@@ -42,7 +42,7 @@ namespace OpenTelemetry.Metrics
         private readonly UpdateDoubleDelegate updateDoubleCallback;
         private readonly int maxMetricPoints;
         private readonly MetricStreamIdentity id; // FIXME: This should be only what we need to keep the constructor simple.
-        private ConcurrentQueue<int> free; // List for now: TODO: use arrays for efficiency/lockfree?
+        private ConcurrentQueue<int> free;
         private int metricPointIndex = 0;
         private int batchSize = 0;
         private int metricCapHitMessageLogged;
@@ -183,10 +183,13 @@ namespace OpenTelemetry.Metrics
             }
 
             // Free list is available: add the index of this point to it and remove the tag lookup entry.
+            metricPoint.MarkAsFree();
+
             this.free.Enqueue(idx);
 
             var tagList = new KeyValuePair<string, object>[metricPoint.Tags.Count]; // TODO: There must be a better way to do this.
             var i = 0;
+
             foreach (var tag in metricPoint.Tags)
             {
                 tagList[i] = tag;
@@ -196,9 +199,9 @@ namespace OpenTelemetry.Metrics
             this.tagsToMetricPointIndexDictionary.TryRemove(tags, out var _); // TODO: Lock?
         }
 
+        // Called when there are no free points available: Finds all stale points and allocates the free list.
         private void BuildFreeListSlow()
         {
-            // Called when there are no free points available: Finds all stale points and allocates the free list.
             this.free = new();
             for (int i = 0; i < this.metricPointIndex; ++i)
             {
@@ -212,6 +215,7 @@ namespace OpenTelemetry.Metrics
             // Now cleanup the tags dictionary.
             // TODO: Make this more efficient, this is just proof of concept code
             var snapshot = this.free.ToList();
+
             foreach (var kv in this.tagsToMetricPointIndexDictionary.ToList())
             {
                 if (snapshot.Contains(kv.Value))
@@ -304,7 +308,8 @@ namespace OpenTelemetry.Metrics
                                 aggregatorIndex = ++this.metricPointIndex;
                                 if (aggregatorIndex >= this.maxMetricPoints)
                                 {
-                                    if (!this.free.TryDequeue(out var freeIdx))
+                                    int freeIdx = 0;
+                                    if (!this.free?.TryDequeue(out freeIdx) ?? true)
                                     {
                                         // sorry! out of data points.
                                         // TODO: Once we support cleanup of
@@ -373,11 +378,17 @@ namespace OpenTelemetry.Metrics
                             aggregatorIndex = ++this.metricPointIndex;
                             if (aggregatorIndex >= this.maxMetricPoints)
                             {
-                                // sorry! out of data points.
-                                // TODO: Once we support cleanup of
-                                // unused points (typically with delta)
-                                // we can re-claim them here.
-                                return -1;
+                                int freeIdx = 0;
+                                if (!this.free?.TryDequeue(out freeIdx) ?? true)
+                                {
+                                    // sorry! out of data points.
+                                    // TODO: Once we support cleanup of
+                                    // unused points (typically with delta)
+                                    // we can re-claim them here.
+                                    return -1;
+                                }
+
+                                aggregatorIndex = freeIdx; // Re-use the free slot
                             }
 
                             ref var metricPoint = ref this.metricPoints[aggregatorIndex];
