@@ -41,7 +41,7 @@ namespace OpenTelemetry.Metrics
         private readonly UpdateLongDelegate updateLongCallback;
         private readonly UpdateDoubleDelegate updateDoubleCallback;
         private readonly int maxMetricPoints;
-        private readonly MetricStreamIdentity id; // FIXME: This should be only what we need to keep the constructor simple.
+        private readonly MetricStreamIdentity id;
         private ConcurrentQueue<int> free;
         private int metricPointIndex = 0;
         private int batchSize = 0;
