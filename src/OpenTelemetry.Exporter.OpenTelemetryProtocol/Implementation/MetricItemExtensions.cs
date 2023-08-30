@@ -531,6 +531,54 @@ namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation
             }
         }
 
+        /*
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static OtlpMetrics.Exemplar ToOtlpExemplar(this IExemplar exemplar)
+        {
+            var otlpExemplar = new OtlpMetrics.Exemplar();
+
+            if (exemplar.Value is double doubleValue)
+            {
+                otlpExemplar.AsDouble = doubleValue;
+            }
+            else if (exemplar.Value is long longValue)
+            {
+                otlpExemplar.AsInt = longValue;
+            }
+            else
+            {
+                // TODO: Determine how we want to handle exceptions here.
+                // Do we want to just skip this exemplar and move on?
+                // Should we skip recording the whole metric?
+                throw new ArgumentException();
+            }
+
+            otlpExemplar.TimeUnixNano = (ulong)exemplar.Timestamp.ToUnixTimeNanoseconds();
+
+            // TODO: Do the TagEnumerationState thing.
+            foreach (var tag in exemplar.FilteredTags)
+            {
+                otlpExemplar.FilteredAttributes.Add(tag.ToOtlpAttribute());
+            }
+
+            if (exemplar.TraceId != default)
+            {
+                byte[] traceIdBytes = new byte[16];
+                exemplar.TraceId.CopyTo(traceIdBytes);
+                otlpExemplar.TraceId = UnsafeByteOperations.UnsafeWrap(traceIdBytes);
+            }
+
+            if (exemplar.SpanId != default)
+            {
+                byte[] spanIdBytes = new byte[8];
+                exemplar.SpanId.CopyTo(spanIdBytes);
+                otlpExemplar.SpanId = UnsafeByteOperations.UnsafeWrap(spanIdBytes);
+            }
+
+            return otlpExemplar;
+        }
+        */
+
         private static Action<RepeatedField<OtlpMetrics.Metric>, int> CreateRepeatedFieldOfMetricSetCountAction()
         {
             FieldInfo repeatedFieldOfMetricCountField = typeof(RepeatedField<OtlpMetrics.Metric>).GetField("count", BindingFlags.NonPublic | BindingFlags.Instance);
