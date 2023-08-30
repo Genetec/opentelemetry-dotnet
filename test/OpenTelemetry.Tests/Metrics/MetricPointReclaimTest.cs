@@ -60,7 +60,7 @@ namespace OpenTelemetry.Tests.Metrics
 
             for (int i = 0; i < MeasurementCount; ++i)
             {
-                measurements.Add(new(i + 1, new KeyValuePair<string, object>("num", i + 1)));
+                measurements.Add(new(i + 1, new KeyValuePair<string, object>("num", i + 1), new KeyValuePair<string, object>("aaa", i + 1))); // unsorted.
             }
 
             List<Metric> metrics = new();

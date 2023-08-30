@@ -187,18 +187,27 @@ namespace OpenTelemetry.Metrics
             metricPoint.MarkAsFree();
             this.free.Enqueue(idx);
 
-            var tempSortedTags = new KeyValuePair<string, object>[metricPoint.Tags.Count];
+            // var tempSortedTags = new KeyValuePair<string, object>[metricPoint.Tags.Count];
+            // var i = 0;
+            // foreach (var tag in metricPoint.Tags)
+            // {
+            //     tempSortedTags[i++] = tag;
+            // }
 
-            var i = 0;
-            foreach (var tag in metricPoint.Tags)
-            {
-                tempSortedTags[i++] = tag;
-            }
-
-            var sortedTags = new Tags(tempSortedTags);
+            // var sortedTags = new Tags(tempSortedTags);
 
             // FIXME(alxbl): There's no way to retrieve the given order of tags here since MetricPoint.Tags is already sorted.
-            this.tagsToMetricPointIndexDictionary.TryRemove(sortedTags, out var _); // TODO: Lock?
+            //               This implementation works but requires one scan of the dictionary per reclaim...
+            foreach (var kv in this.tagsToMetricPointIndexDictionary)
+            {
+                if (kv.Value == idx)
+                {
+                    this.tagsToMetricPointIndexDictionary.TryRemove(kv.Key, out _);
+                }
+            }
+
+            // this.tagsToMetricPointIndexDictionary.TryRemove(givenTags, out var _);  // TODO: Lock?
+            // this.tagsToMetricPointIndexDictionary.TryRemove(sortedTags, out var _);
         }
 
         // Called when there are no free points left: Finds all stale points and allocates the free list.
@@ -211,7 +220,7 @@ namespace OpenTelemetry.Metrics
                 ref var metricPoint = ref this.metricPoints[kv.Value];
                 if (metricPoint.MetricPointStatus == MetricPointStatus.Stale || metricPoint.MetricPointStatus == MetricPointStatus.Free)
                 {
-                    this.tagsToMetricPointIndexDictionary.TryRemove(kv.Key, out var _);
+                    this.tagsToMetricPointIndexDictionary.TryRemove(kv.Key, out _);
                     if (metricPoint.MetricPointStatus == MetricPointStatus.Stale)
                     {
                         this.free.Enqueue(kv.Value); // Avoid adding the same index twice when givenTags 1= sortedTags.
