@@ -1,4 +1,4 @@
-// <copyright file="ReclaimDebug.cs" company="OpenTelemetry Authors">
+// <copyright file="MetricPointReclaimTest.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // </copyright>
-using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using OpenTelemetry.Metrics;
 using Xunit;
@@ -26,7 +25,6 @@ namespace OpenTelemetry.Tests.Metrics
 
         private static readonly Meter Meter = new(nameof(MetricPointReclaimTest), "1.0.0");
 
-        // The data used to reproduce the problem.
         private static readonly List<(int, int)> Data = new()
         {
                  (1, 2),
@@ -58,7 +56,6 @@ namespace OpenTelemetry.Tests.Metrics
         [Fact]
         public void Verify_DataPointReclaimLabelConsistency()
         {
-            Random rng = new();
             List<Measurement<int>> measurements = new();
 
             for (int i = 0; i < MeasurementCount; ++i)
@@ -87,22 +84,12 @@ namespace OpenTelemetry.Tests.Metrics
 
             void VerifyLabelsAndValue(Metric metric)
             {
-                if (metric.Name != "gauge" || metric.MeterName != Meter.Name)
-                {
-                    return; // Not the intended instrument.
-                }
-
                 foreach (var datapoint in metric.GetMetricPoints())
                 {
                     var tags = new Dictionary<string, object>();
                     foreach (var tag in datapoint.Tags)
                     {
                         tags.Add(tag.Key, tag.Value);
-                    }
-
-                    if (Data.Count == 0)
-                    {
-                        Debugger.Break();
                     }
 
                     var expected = datapoint.GetGaugeLastValueLong();

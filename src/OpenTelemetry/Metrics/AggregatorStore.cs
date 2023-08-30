@@ -14,6 +14,7 @@
 // limitations under the License.
 // </copyright>
 
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using OpenTelemetry.Internal;
@@ -129,7 +130,7 @@ namespace OpenTelemetry.Metrics
 
                 // If the point is already stale when taking its snapshot, the instrument hasn't reported a measurement
                 // during this Collect cycle. For observable instruments, this means that the point can be reclaimed.
-                if (metricPoint.MetricPointStatus == MetricPointStatus.Stale /* && this.id.IsObservable */)
+                if (metricPoint.MetricPointStatus == MetricPointStatus.Stale)
                 {
                     this.ReclaimMetricPoint(ref metricPoint, i);
                     continue;
@@ -179,48 +180,43 @@ namespace OpenTelemetry.Metrics
         {
             if (this.free == null)
             {
-                return; // Once there are no free points left, the free list will be initialized.
+                return; // Ignore the stale point until the free list is initialized.
             }
 
-            // Free list is available: add the index of this point to it and remove the tag lookup entry.
+            // Free list is available: Mark this metric point as free and remove its tag lookup entries.
             metricPoint.MarkAsFree();
-
             this.free.Enqueue(idx);
 
-            var tagList = new KeyValuePair<string, object>[metricPoint.Tags.Count]; // TODO: There must be a better way to do this.
-            var i = 0;
+            var tempSortedTags = new KeyValuePair<string, object>[metricPoint.Tags.Count];
 
+            var i = 0;
             foreach (var tag in metricPoint.Tags)
             {
-                tagList[i] = tag;
+                tempSortedTags[i++] = tag;
             }
 
-            var tags = new Tags(tagList);
-            this.tagsToMetricPointIndexDictionary.TryRemove(tags, out var _); // TODO: Lock?
+            var sortedTags = new Tags(tempSortedTags);
+
+            // FIXME(alxbl): There's no way to retrieve the given order of tags here since MetricPoint.Tags is already sorted.
+            this.tagsToMetricPointIndexDictionary.TryRemove(sortedTags, out var _); // TODO: Lock?
         }
 
-        // Called when there are no free points available: Finds all stale points and allocates the free list.
+        // Called when there are no free points left: Finds all stale points and allocates the free list.
         private void BuildFreeListSlow()
         {
             this.free = new();
-            for (int i = 0; i < this.metricPointIndex; ++i)
-            {
-                ref var metricPoint = ref this.metricPoints[i];
-                if (metricPoint.MetricPointStatus == MetricPointStatus.Stale)
-                {
-                    this.free.Enqueue(i);
-                }
-            }
 
-            // Now cleanup the tags dictionary.
-            // TODO: Make this more efficient, this is just proof of concept code
-            var snapshot = this.free.ToList();
-
-            foreach (var kv in this.tagsToMetricPointIndexDictionary.ToList())
+            foreach (var kv in this.tagsToMetricPointIndexDictionary)
             {
-                if (snapshot.Contains(kv.Value))
+                ref var metricPoint = ref this.metricPoints[kv.Value];
+                if (metricPoint.MetricPointStatus == MetricPointStatus.Stale || metricPoint.MetricPointStatus == MetricPointStatus.Free)
                 {
                     this.tagsToMetricPointIndexDictionary.TryRemove(kv.Key, out var _);
+                    if (metricPoint.MetricPointStatus == MetricPointStatus.Stale)
+                    {
+                        this.free.Enqueue(kv.Value); // Avoid adding the same index twice when givenTags 1= sortedTags.
+                        metricPoint.MarkAsFree();
+                    }
                 }
             }
         }

@@ -21,7 +21,7 @@ namespace OpenTelemetry.Metrics.Tests
 {
     public class AggregatorTest
     {
-        private static readonly Meter Meter = new("test.meter", "1.0");
+        private static readonly Meter Meter = new(nameof(AggregatorTest), "1.0");
         private static readonly Instrument Instrument = Meter.CreateCounter<int>("test");
 
         private readonly AggregatorStore aggregatorStore = new(new MetricStreamIdentity(Instrument, null), AggregationType.HistogramWithBuckets, AggregationTemporality.Cumulative, 1024, Metric.DefaultHistogramBounds);
