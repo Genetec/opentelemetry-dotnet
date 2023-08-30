@@ -14,6 +14,7 @@
 // limitations under the License.
 // </copyright>
 
+using System.Buffers;
 using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation;
 using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation.ExportClient;
 using OpenTelemetry.Metrics;
@@ -29,7 +30,19 @@ namespace OpenTelemetry.Exporter
     /// </summary>
     public class OtlpMetricExporter : BaseExporter<Metric>
     {
+        private static readonly Random Random = new();
+
         private readonly IExportClient<OtlpCollector.ExportMetricsServiceRequest> exportClient;
+
+        private readonly int dataPointBatchSize;
+
+        private readonly bool dataPointbatchingEnabled;
+
+        private readonly int dataPointBatchExportInterval;
+
+        private readonly int maxJitter;
+
+        private readonly int minJitter;
 
         private OtlpResource.Resource processResource;
 
@@ -57,6 +70,12 @@ namespace OpenTelemetry.Exporter
             {
                 this.exportClient = options.GetMetricsExportClient();
             }
+
+            this.dataPointBatchSize = options.DataPointBatchSize;
+            this.dataPointbatchingEnabled = options.DataPointBatchingEnabled;
+            this.dataPointBatchExportInterval = options.DataPointBatchExportInterval;
+            this.maxJitter = options.MaxJitter;
+            this.minJitter = options.MinJitter;
         }
 
         internal OtlpResource.Resource ProcessResource => this.processResource ??= this.ParentProvider.GetResource().ToOtlpResource();
@@ -69,55 +88,59 @@ namespace OpenTelemetry.Exporter
 
             // [Performance] Need to allow for a message with partial data points but several metrics so we can still batch metrics in a single message
             //               and minimize the amount of requests to transmit all the data.
-            var perMetricBatches = new List<OtlpMetrics.Metric>[metrics.Count];
-            var meterNames = new Metric[metrics.Count]; // [abeaulieu] Would be nice to be able to do that without copying the metrics.
+            var perMetricBatches = ArrayPool<List<OtlpMetrics.Metric>>.Shared.Rent((int)metrics.Count);
+            var allMetrics = ArrayPool<Metric>.Shared.Rent((int)metrics.Count);
 
             var i = 0;
             foreach (var metric in metrics)
             {
-                perMetricBatches[i] = metric.ToBatchedOtlpMetric().ToList();
-                meterNames[i] = metric;
+                perMetricBatches[i] = metric.ToOtlpMetric(this.dataPointBatchSize, this.dataPointbatchingEnabled).ToList();
+                allMetrics[i] = metric;
                 ++i;
             }
 
             // [abeaulieu] Now loop through all the metrics until we've sent all the messages to send
-            var done = false;
-            var num_msg = 0;
-            var wire_size = 0;
-            while (!done)
+            OtlpCollector.ExportMetricsServiceRequest request;
+            bool mustWait = false;
+            do
             {
-                var request = new OtlpCollector.ExportMetricsServiceRequest();
-
-                // Try to make progress on every metric that still has data to send.
-                for (i = 0; i < perMetricBatches.Length; ++i)
+                var currentBatchSize = 0;
+                request = null;
+                for (i = 0; i < metrics.Count; ++i)
                 {
-                    done = true; // If all metrics have flushed their data, done will remain true and the loop exits.
-
                     var messages = perMetricBatches[i];
                     if (messages.Count > 0)
                     {
+                        request ??= new OtlpCollector.ExportMetricsServiceRequest();
                         var m = messages[messages.Count - 1]; // Take the last one so there's no need to list copy to shift the list left.
-                        messages.RemoveAt(messages.Count - 1); // [Perf]: Use a queue or just index manipulation to avoid memory shenanigans.
-                        request.AddMetrics(this.ProcessResource, m, meterNames[i]);
-                        done = false; // Not done until every metric has nothing to send.
-                        num_msg++;
+                        var dataPointCount = m.GetDataPointCount();
+
+                        if (currentBatchSize + dataPointCount <= this.dataPointBatchSize) // if the current message fits in the request
+                        {
+                            currentBatchSize += dataPointCount;
+                            messages.RemoveAt(messages.Count - 1); // [Perf]: Use a queue or just index manipulation to avoid memory shenanigans.
+                            mustWait |= messages.Count > 0;
+                            request.AddMetrics(this.ProcessResource, m, allMetrics[i]);
+                        }
+                        else
+                        {
+                            mustWait = true;
+                            continue;
+                        }
                     }
                 }
 
                 try
                 {
-                    wire_size += request.CalculateSize();
-
-                    // [abeaulieu] This need to be refactored since we will need several requests now.
-                    // request.AddMetrics(this.ProcessResource, metrics);
-                    // [abeaulieu] TODO: Spread the request load?
-                    if (!this.exportClient.SendExportRequest(request))
+                    if (request != null && !this.exportClient.SendExportRequest(request))
                     {
-                        // Fail as soon as one export fails.
-                        // [abeaulieu] Should we try the rest of the messages and only return the result at the end?
-                        // Need to handle partial success here... what happens if only some payloads made it?
-                        // Ideally the telemetry should be split into individual messages that get processed using the retry mechanism/
                         return ExportResult.Failure;
+                    }
+
+                    if (mustWait && this.dataPointBatchExportInterval > 0)
+                    {
+                        var delay = this.dataPointBatchExportInterval + Random.Next(this.minJitter, this.maxJitter);
+                        Thread.Sleep(delay);
                     }
                 }
                 catch (Exception ex)
@@ -127,11 +150,13 @@ namespace OpenTelemetry.Exporter
                 }
                 finally
                 {
-                    request.Return();
+                    ArrayPool<List<OtlpMetrics.Metric>>.Shared.Return(perMetricBatches);
+                    ArrayPool<Metric>.Shared.Return(allMetrics);
+                    request?.Return();
+                    mustWait = false;
                 }
             }
-
-            Console.WriteLine($"\nSent {num_msg} messages totaling {wire_size / 1024.0f / 1024.0f} MB of data");
+            while (request != null);
 
             return ExportResult.Success;
         }
