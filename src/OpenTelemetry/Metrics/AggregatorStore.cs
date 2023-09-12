@@ -43,7 +43,7 @@ namespace OpenTelemetry.Metrics
         private readonly UpdateDoubleDelegate updateDoubleCallback;
         private readonly int maxMetricPoints;
         private readonly MetricStreamIdentity id;
-        private ConcurrentQueue<int> free;
+        private ConcurrentQueue<int> freeMetricPoints;
         private int metricPointIndex = 0;
         private int batchSize = 0;
         private int metricCapHitMessageLogged;
@@ -62,7 +62,7 @@ namespace OpenTelemetry.Metrics
             this.maxMetricPoints = maxMetricPoints;
             this.metricPointCapHitMessage = $"Maximum MetricPoints limit reached for this Metric stream. Configured limit: {this.maxMetricPoints}";
             this.metricPoints = new MetricPoint[maxMetricPoints];
-            this.free = null;
+            this.freeMetricPoints = null;
             this.currentMetricPointBatch = new int[maxMetricPoints];
             this.aggType = aggType;
             this.outputDelta = temporality == AggregationTemporality.Delta;
@@ -178,14 +178,14 @@ namespace OpenTelemetry.Metrics
 
         internal void ReclaimMetricPoint(ref MetricPoint metricPoint, int idx)
         {
-            if (this.free == null)
+            if (this.freeMetricPoints == null)
             {
                 return; // Ignore the stale point until the free list is initialized.
             }
 
             // Free list is available: Mark this metric point as free and remove its tag lookup entries.
             metricPoint.MarkAsFree();
-            this.free.Enqueue(idx);
+            this.freeMetricPoints.Enqueue(idx);
 
             // var tempSortedTags = new KeyValuePair<string, object>[metricPoint.Tags.Count];
             // var i = 0;
@@ -213,7 +213,7 @@ namespace OpenTelemetry.Metrics
         // Called when there are no free points left: Finds all stale points and allocates the free list.
         private void BuildFreeListSlow()
         {
-            this.free = new();
+            this.freeMetricPoints = new();
 
             foreach (var kv in this.tagsToMetricPointIndexDictionary)
             {
@@ -223,7 +223,7 @@ namespace OpenTelemetry.Metrics
                     this.tagsToMetricPointIndexDictionary.TryRemove(kv.Key, out _);
                     if (metricPoint.MetricPointStatus == MetricPointStatus.Stale)
                     {
-                        this.free.Enqueue(kv.Value); // Avoid adding the same index twice when givenTags 1= sortedTags.
+                        this.freeMetricPoints.Enqueue(kv.Value); // Avoid adding the same index twice when givenTags 1= sortedTags.
                         metricPoint.MarkAsFree();
                     }
                 }
@@ -270,18 +270,18 @@ namespace OpenTelemetry.Metrics
                         if (aggregatorIndex >= this.maxMetricPoints)
                         {
                             // Build the free list if it's not already built.
-                            if (this.free == null)
+                            if (this.freeMetricPoints == null)
                             {
                                 lock (this.tagsToMetricPointIndexDictionary)
                                 {
-                                    if (this.free == null)
+                                    if (this.freeMetricPoints == null)
                                     {
                                         this.BuildFreeListSlow();
                                     }
                                 }
                             }
 
-                            if (this.free.IsEmpty)
+                            if (this.freeMetricPoints.IsEmpty)
                             {
                                 // sorry! out of data points.
                                 // TODO: Once we support cleanup of
@@ -314,7 +314,7 @@ namespace OpenTelemetry.Metrics
                                 if (aggregatorIndex >= this.maxMetricPoints)
                                 {
                                     int freeIdx = 0;
-                                    if (!this.free?.TryDequeue(out freeIdx) ?? true)
+                                    if (!this.freeMetricPoints?.TryDequeue(out freeIdx) ?? true)
                                     {
                                         // sorry! out of data points.
                                         // TODO: Once we support cleanup of
@@ -347,18 +347,18 @@ namespace OpenTelemetry.Metrics
                     if (aggregatorIndex >= this.maxMetricPoints)
                     {
                         // Build the free list if it's not already built.
-                        if (this.free == null)
+                        if (this.freeMetricPoints == null)
                         {
                             lock (this.tagsToMetricPointIndexDictionary)
                             {
-                                if (this.free == null)
+                                if (this.freeMetricPoints == null)
                                 {
                                     this.BuildFreeListSlow();
                                 }
                             }
                         }
 
-                        if (this.free.IsEmpty)
+                        if (this.freeMetricPoints.IsEmpty)
                         {
                             // sorry! out of data points.
                             // TODO: Once we support cleanup of
@@ -384,7 +384,7 @@ namespace OpenTelemetry.Metrics
                             if (aggregatorIndex >= this.maxMetricPoints)
                             {
                                 int freeIdx = 0;
-                                if (!this.free?.TryDequeue(out freeIdx) ?? true)
+                                if (!this.freeMetricPoints?.TryDequeue(out freeIdx) ?? true)
                                 {
                                     // sorry! out of data points.
                                     // TODO: Once we support cleanup of
