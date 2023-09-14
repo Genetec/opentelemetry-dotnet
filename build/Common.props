@@ -1,6 +1,8 @@
 <Project>
   <PropertyGroup>
     <LangVersion>latest</LangVersion>
+    <CompanyName>Genetec</CompanyName>
+    <PackageId>$(CompanyName).$(MSBuildProjectName)</PackageId>
     <SignAssembly>true</SignAssembly>
     <RepoRoot>$([System.IO.Directory]::GetParent($(MSBuildThisFileDirectory)).Parent.FullName)</RepoRoot>
     <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)debug.snk</AssemblyOriginatorKeyFile>
