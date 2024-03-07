@@ -1,18 +1,5 @@
-// <copyright file="Base2ExponentialBucketHistogram.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
 using OpenTelemetry.Internal;
@@ -36,9 +23,7 @@ internal sealed partial class Base2ExponentialBucketHistogram
     internal double RunningMax = double.NegativeInfinity;
     internal double SnapshotMax;
 
-    internal int IsCriticalSectionOccupied = 0;
-
-    internal ExponentialHistogramData SnapshotExponentialHistogramData = new ExponentialHistogramData();
+    internal ExponentialHistogramData SnapshotExponentialHistogramData = new();
 
     private int scale;
     private double scalingFactor; // 2 ^ scale / log(2)
@@ -237,11 +222,13 @@ internal sealed partial class Base2ExponentialBucketHistogram
     internal Base2ExponentialBucketHistogram Copy()
     {
         Debug.Assert(this.PositiveBuckets.Capacity == this.NegativeBuckets.Capacity, "Capacity of positive and negative buckets are not equal.");
-        var copy = new Base2ExponentialBucketHistogram(this.PositiveBuckets.Capacity, this.SnapshotExponentialHistogramData.Scale);
-        copy.SnapshotSum = this.SnapshotSum;
-        copy.SnapshotMin = this.SnapshotMin;
-        copy.SnapshotMax = this.SnapshotMax;
-        copy.SnapshotExponentialHistogramData = this.SnapshotExponentialHistogramData.Copy();
-        return copy;
+
+        return new Base2ExponentialBucketHistogram(this.PositiveBuckets.Capacity, this.SnapshotExponentialHistogramData.Scale)
+        {
+            SnapshotSum = this.SnapshotSum,
+            SnapshotMin = this.SnapshotMin,
+            SnapshotMax = this.SnapshotMax,
+            SnapshotExponentialHistogramData = this.SnapshotExponentialHistogramData.Copy(),
+        };
     }
 }

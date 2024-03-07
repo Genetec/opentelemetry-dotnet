@@ -7,15 +7,16 @@ This is an [Instrumentation Library](https://github.com/open-telemetry/opentelem
 which instruments [Grpc.Net.Client](https://www.nuget.org/packages/Grpc.Net.Client)
 and collects traces about outgoing gRPC requests.
 
-**Note: This component is based on the OpenTelemetry semantic conventions for
-[traces](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/trace/semantic_conventions).
+> [!CAUTION]
+> This component is based on the OpenTelemetry semantic conventions for
+[traces](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/rpc/rpc-spans.md).
 These conventions are
 [Experimental](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/document-status.md),
 and hence, this package is a [pre-release](../../VERSIONING.md#pre-releases).
 Until a [stable
 version](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/telemetry-stability.md)
 is released, there can be breaking changes. You can track the progress from
-[milestones](https://github.com/open-telemetry/opentelemetry-dotnet/milestone/23).**
+[milestones](https://github.com/open-telemetry/opentelemetry-dotnet/milestone/23).
 
 ## Supported .NET Versions
 
@@ -78,6 +79,11 @@ This instrumentation can be configured to change the default behavior by using
 `GrpcClientInstrumentationOptions`.
 
 ### SuppressDownstreamInstrumentation
+
+> [!CAUTION]
+> `SuppressDownstreamInstrumentation` no longer works when used in conjunction
+with the `OpenTelemetry.Instrumentation.Http` package version `1.6.0` and greater.
+This option may change or even be removed in a future release.
 
 This option prevents downstream instrumentation from being invoked.
 Grpc.Net.Client is built on top of HttpClient. When instrumentation for both

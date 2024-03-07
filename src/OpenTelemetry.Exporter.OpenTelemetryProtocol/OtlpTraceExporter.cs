@@ -1,120 +1,93 @@
-// <copyright file="OtlpTraceExporter.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
 using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation;
-using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation.ExportClient;
+using OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation.Transmission;
 using OpenTelemetry.Internal;
 using OtlpCollector = OpenTelemetry.Proto.Collector.Trace.V1;
 using OtlpResource = OpenTelemetry.Proto.Resource.V1;
 
-namespace OpenTelemetry.Exporter
+namespace OpenTelemetry.Exporter;
+
+/// <summary>
+/// Exporter consuming <see cref="Activity"/> and exporting the data using
+/// the OpenTelemetry protocol (OTLP).
+/// </summary>
+public class OtlpTraceExporter : BaseExporter<Activity>
 {
+    private readonly SdkLimitOptions sdkLimitOptions;
+    private readonly OtlpExporterTransmissionHandler<OtlpCollector.ExportTraceServiceRequest> transmissionHandler;
+
+    private OtlpResource.Resource processResource;
+
     /// <summary>
-    /// Exporter consuming <see cref="Activity"/> and exporting the data using
-    /// the OpenTelemetry protocol (OTLP).
+    /// Initializes a new instance of the <see cref="OtlpTraceExporter"/> class.
     /// </summary>
-    public class OtlpTraceExporter : BaseExporter<Activity>
+    /// <param name="options">Configuration options for the export.</param>
+    public OtlpTraceExporter(OtlpExporterOptions options)
+        : this(options, sdkLimitOptions: new(), transmissionHandler: null)
     {
-        private readonly SdkLimitOptions sdkLimitOptions;
-        private readonly IExportClient<OtlpCollector.ExportTraceServiceRequest> exportClient;
+    }
 
-        private OtlpResource.Resource processResource;
+    /// <summary>
+    /// Initializes a new instance of the <see cref="OtlpTraceExporter"/> class.
+    /// </summary>
+    /// <param name="exporterOptions"><see cref="OtlpExporterOptions"/>.</param>
+    /// <param name="sdkLimitOptions"><see cref="SdkLimitOptions"/>.</param>
+    /// <param name="transmissionHandler"><see cref="OtlpExporterTransmissionHandler{T}"/>.</param>
+    internal OtlpTraceExporter(
+    OtlpExporterOptions exporterOptions,
+    SdkLimitOptions sdkLimitOptions,
+    OtlpExporterTransmissionHandler<OtlpCollector.ExportTraceServiceRequest> transmissionHandler = null)
+    {
+        Debug.Assert(exporterOptions != null, "exporterOptions was null");
+        Debug.Assert(sdkLimitOptions != null, "sdkLimitOptions was null");
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="OtlpTraceExporter"/> class.
-        /// </summary>
-        /// <param name="options">Configuration options for the export.</param>
-        public OtlpTraceExporter(OtlpExporterOptions options)
-            : this(options, new(), null)
+        this.sdkLimitOptions = sdkLimitOptions;
+
+        OtlpKeyValueTransformer.LogUnsupportedAttributeType = OpenTelemetryProtocolExporterEventSource.Log.UnsupportedAttributeType;
+
+        ConfigurationExtensions.LogInvalidEnvironmentVariable = OpenTelemetryProtocolExporterEventSource.Log.InvalidEnvironmentVariable;
+
+        this.transmissionHandler = transmissionHandler ?? exporterOptions.GetTraceExportTransmissionHandler();
+    }
+
+    internal OtlpResource.Resource ProcessResource => this.processResource ??= this.ParentProvider.GetResource().ToOtlpResource();
+
+    /// <inheritdoc/>
+    public override ExportResult Export(in Batch<Activity> activityBatch)
+    {
+        // Prevents the exporter's gRPC and HTTP operations from being instrumented.
+        using var scope = SuppressInstrumentationScope.Begin();
+
+        var request = new OtlpCollector.ExportTraceServiceRequest();
+
+        try
         {
-        }
+            request.AddBatch(this.sdkLimitOptions, this.ProcessResource, activityBatch);
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="OtlpTraceExporter"/> class.
-        /// </summary>
-        /// <param name="exporterOptions"><see cref="OtlpExporterOptions"/>.</param>
-        /// <param name="sdkLimitOptions"><see cref="SdkLimitOptions"/>.</param>
-        /// <param name="exportClient">Client used for sending export request.</param>
-        internal OtlpTraceExporter(
-            OtlpExporterOptions exporterOptions,
-            SdkLimitOptions sdkLimitOptions,
-            IExportClient<OtlpCollector.ExportTraceServiceRequest> exportClient = null)
-        {
-            Debug.Assert(exporterOptions != null, "exporterOptions was null");
-            Debug.Assert(sdkLimitOptions != null, "sdkLimitOptions was null");
-
-            this.sdkLimitOptions = sdkLimitOptions;
-
-            OtlpKeyValueTransformer.LogUnsupportedAttributeType = (string tagValueType, string tagKey) =>
+            if (!this.transmissionHandler.TrySubmitRequest(request))
             {
-                OpenTelemetryProtocolExporterEventSource.Log.UnsupportedAttributeType(tagValueType, tagKey);
-            };
-
-            ConfigurationExtensions.LogInvalidEnvironmentVariable = (string key, string value) =>
-            {
-                OpenTelemetryProtocolExporterEventSource.Log.InvalidEnvironmentVariable(key, value);
-            };
-
-            if (exportClient != null)
-            {
-                this.exportClient = exportClient;
-            }
-            else
-            {
-                this.exportClient = exporterOptions.GetTraceExportClient();
-            }
-        }
-
-        internal OtlpResource.Resource ProcessResource => this.processResource ??= this.ParentProvider.GetResource().ToOtlpResource();
-
-        /// <inheritdoc/>
-        public override ExportResult Export(in Batch<Activity> activityBatch)
-        {
-            // Prevents the exporter's gRPC and HTTP operations from being instrumented.
-            using var scope = SuppressInstrumentationScope.Begin();
-
-            var request = new OtlpCollector.ExportTraceServiceRequest();
-
-            try
-            {
-                request.AddBatch(this.sdkLimitOptions, this.ProcessResource, activityBatch);
-
-                if (!this.exportClient.SendExportRequest(request))
-                {
-                    return ExportResult.Failure;
-                }
-            }
-            catch (Exception ex)
-            {
-                OpenTelemetryProtocolExporterEventSource.Log.ExportMethodException(ex);
                 return ExportResult.Failure;
             }
-            finally
-            {
-                request.Return();
-            }
-
-            return ExportResult.Success;
         }
-
-        /// <inheritdoc />
-        protected override bool OnShutdown(int timeoutMilliseconds)
+        catch (Exception ex)
         {
-            return this.exportClient?.Shutdown(timeoutMilliseconds) ?? true;
+            OpenTelemetryProtocolExporterEventSource.Log.ExportMethodException(ex);
+            return ExportResult.Failure;
         }
+        finally
+        {
+            request.Return();
+        }
+
+        return ExportResult.Success;
+    }
+
+    /// <inheritdoc />
+    protected override bool OnShutdown(int timeoutMilliseconds)
+    {
+        return this.transmissionHandler.Shutdown(timeoutMilliseconds);
     }
 }

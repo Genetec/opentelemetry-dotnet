@@ -2,16 +2,53 @@
 
 ## Unreleased
 
-* Add back support for Exemplars. See [exemplars](../../docs/metrics/customizing-the-sdk/README.md#exemplars)
-  for instructions to enable exemplars.
-  ([#4553](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4553))
+## 1.7.0
 
-* Updated to display `Severity` and `SeverityText` text instead of
-  `ILogger.LogLevel` when exporting `LogRecord` instances.
-  ([#4568](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4568))
+Released 2023-Dec-08
 
-* Added `LoggerProviderBuilder.AddConsoleExporter` registration extension.
-  ([#4583](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4583))
+## 1.7.0-rc.1
+
+Released 2023-Nov-29
+
+* Add support for Instrumentation Scope Attributes (i.e [Meter
+  Tags](https://learn.microsoft.com/dotnet/api/system.diagnostics.metrics.meter.tags)),
+  fixing issue
+  [#4563](https://github.com/open-telemetry/opentelemetry-dotnet/issues/4563).
+  ([#5089](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5089))
+
+## 1.7.0-alpha.1
+
+Released 2023-Oct-16
+
+## 1.6.0
+
+Released 2023-Sep-05
+
+## 1.6.0-rc.1
+
+Released 2023-Aug-21
+
+## 1.6.0-alpha.1
+
+Released 2023-Jul-12
+
+* **Experimental (pre-release builds only):**
+
+  * Note: See
+    [#4735](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4735)
+    for the introduction of experimental api support.
+
+  * Add back support for Exemplars. See
+    [exemplars](../../docs/metrics/customizing-the-sdk/README.md#exemplars) for
+    instructions to enable exemplars.
+    ([#4553](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4553))
+
+  * Updated to display `Severity` and `SeverityText` text instead of
+    `ILogger.LogLevel` when exporting `LogRecord` instances.
+    ([#4568](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4568))
+
+  * Added `LoggerProviderBuilder.AddConsoleExporter` registration extension.
+    ([#4583](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4583))
 
 ## 1.5.1
 

@@ -1,18 +1,5 @@
-// <copyright file="Program.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
@@ -20,40 +7,39 @@ using OpenTelemetry;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Trace;
 
-namespace Correlation;
-
 public class Program
 {
-    private static readonly ActivitySource MyActivitySource = new(
-        "MyCompany.MyProduct.MyLibrary");
+    private static readonly ActivitySource MyActivitySource = new("MyCompany.MyProduct.MyLibrary");
 
     public static void Main()
     {
-        // Setup Logging
-        using var loggerFactory = LoggerFactory.Create(builder =>
+        var tracerProvider = Sdk.CreateTracerProviderBuilder()
+            .AddSource("MyCompany.MyProduct.MyLibrary")
+            .AddConsoleExporter()
+            .Build();
+
+        var loggerFactory = LoggerFactory.Create(builder =>
         {
-            builder.AddOpenTelemetry(options =>
+            builder.AddOpenTelemetry(logging =>
             {
-                options.AddConsoleExporter();
+                logging.AddConsoleExporter();
             });
         });
 
         var logger = loggerFactory.CreateLogger<Program>();
 
-        // Setup Traces
-        using var tracerProvider = Sdk.CreateTracerProviderBuilder()
-            .AddSource("MyCompany.MyProduct.MyLibrary")
-            .AddConsoleExporter()
-            .Build();
-
-        // Emit activity
         using (var activity = MyActivitySource.StartActivity("SayHello"))
         {
-            activity?.SetTag("foo", 1);
-
-            // emit logs within the context
-            // of activity
-            logger.LogInformation("Hello from {name} {price}.", "tomato", 2.99);
+            // Write a log within the context of an activity
+            logger.FoodPriceChanged("artichoke", 9.99);
         }
+
+        // Dispose logger factory before the application ends.
+        // This will flush the remaining logs and shutdown the logging pipeline.
+        loggerFactory.Dispose();
+
+        // Dispose tracer provider before the application ends.
+        // This will flush the remaining spans and shutdown the tracing pipeline.
+        tracerProvider.Dispose();
     }
 }

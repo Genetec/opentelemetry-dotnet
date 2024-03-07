@@ -1,20 +1,5 @@
-// <copyright file="BatchLogRecordExportProcessor.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
-
-#nullable enable
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
 using OpenTelemetry.Logs;
@@ -57,13 +42,27 @@ public class BatchLogRecordExportProcessor : BatchExportProcessor<LogRecord>
         // happen here.
         Debug.Assert(data != null, "LogRecord was null.");
 
-        data!.Buffer();
-
-        data.AddReference();
-
-        if (!this.TryExport(data))
+        switch (data!.Source)
         {
-            LogRecordSharedPool.Current.Return(data);
+            case LogRecord.LogRecordSource.FromSharedPool:
+                data.Buffer();
+                data.AddReference();
+                if (!this.TryExport(data))
+                {
+                    LogRecordSharedPool.Current.Return(data);
+                }
+
+                break;
+            case LogRecord.LogRecordSource.CreatedManually:
+                data.Buffer();
+                this.TryExport(data);
+                break;
+            default:
+                Debug.Assert(data.Source == LogRecord.LogRecordSource.FromThreadStaticPool, "LogRecord source was something unexpected");
+
+                // Note: If we are using ThreadStatic pool we make a copy of the record.
+                this.TryExport(data.Copy());
+                break;
         }
     }
 }

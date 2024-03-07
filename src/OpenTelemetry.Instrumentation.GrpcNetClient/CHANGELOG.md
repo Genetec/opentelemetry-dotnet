@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+## 1.7.0-beta.1
+
+Released 2024-Feb-09
+
+* **Breaking Change**:
+  Please be advised that the
+  [SuppressDownstreamInstrumentation](https://github.com/open-telemetry/opentelemetry-dotnet/tree/main/src/OpenTelemetry.Instrumentation.GrpcNetClient#suppressdownstreaminstrumentation)
+  option no longer works when used in conjunction with the
+  `OpenTelemetry.Instrumentation.Http` package version `1.6.0` or greater.
+  This is not a result of a change in the `OpenTelemetry.Instrumentation.GrpcNetClient`
+  package therefore this also affects versions prior to this release. See this
+  [issue](https://github.com/open-telemetry/opentelemetry-dotnet/issues/5092)
+  for details and workaround.
+* Removed support for the `OTEL_SEMCONV_STABILITY_OPT_IN` environment variable
+  which toggled the use of the new conventions for the
+  [server, client, and shared network attributes](https://github.com/open-telemetry/semantic-conventions/blob/v1.23.0/docs/general/attributes.md#server-client-and-shared-network-attributes).
+  Now that this suite of attributes are stable, this instrumentation will only
+  emit the new attributes.
+  ([#5259](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5259))
+* **Breaking Change**: Renamed `GrpcClientInstrumentationOptions` to
+  `GrpcClientTraceInstrumentationOptions`.
+  ([#5272](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5272))
+
+## 1.6.0-beta.3
+
+Released 2023-Nov-17
+
+## 1.6.0-beta.2
+
+Released 2023-Oct-26
+
+## 1.5.1-beta.1
+
+Released 2023-Jul-20
+
+* The new network semantic conventions can be opted in to by setting
+  the `OTEL_SEMCONV_STABILITY_OPT_IN` environment variable. This allows for a
+  transition period for users to experiment with the new semantic conventions
+  and adapt as necessary. The environment variable supports the following
+  values:
+  * `http` - emit the new, frozen (proposed for stable) networking
+  attributes, and stop emitting the old experimental networking
+  attributes that the instrumentation emitted previously.
+  * `http/dup` - emit both the old and the frozen (proposed for stable)
+  networking attributes, allowing for a more seamless transition.
+  * The default behavior (in the absence of one of these values) is to continue
+  emitting the same network semantic conventions that were emitted in
+  `1.5.0-beta.1`.
+  * Note: this option will eventually be removed after the new
+  network semantic conventions are marked stable. Refer to the
+  specification for more information regarding the new network
+  semantic conventions for
+  [spans](https://github.com/open-telemetry/semantic-conventions/blob/v1.21.0/docs/rpc/rpc-spans.md).
+  ([#4658](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4658))
+
 ## 1.5.0-beta.1
 
 Released 2023-Jun-05

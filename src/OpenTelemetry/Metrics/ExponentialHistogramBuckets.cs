@@ -1,23 +1,12 @@
-// <copyright file="ExponentialHistogramBuckets.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
-
-#nullable enable
+// SPDX-License-Identifier: Apache-2.0
 
 namespace OpenTelemetry.Metrics;
 
+/// <summary>
+/// Contains the buckets of an exponential histogram.
+/// </summary>
+// Note: Does not implement IEnumerable<> to prevent accidental boxing.
 public sealed class ExponentialHistogramBuckets
 {
     private long[] buckets = Array.Empty<long>();
@@ -27,8 +16,15 @@ public sealed class ExponentialHistogramBuckets
     {
     }
 
+    /// <summary>
+    /// Gets the exponential histogram offset.
+    /// </summary>
     public int Offset { get; private set; }
 
+    /// <summary>
+    /// Returns an enumerator that iterates through the <see cref="ExponentialHistogramBuckets"/>.
+    /// </summary>
+    /// <returns><see cref="Enumerator"/>.</returns>
     public Enumerator GetEnumerator() => new(this.buckets, this.size);
 
     internal void SnapshotBuckets(CircularBufferBuckets buckets)
@@ -45,10 +41,12 @@ public sealed class ExponentialHistogramBuckets
 
     internal ExponentialHistogramBuckets Copy()
     {
-        var copy = new ExponentialHistogramBuckets();
-        copy.size = this.size;
-        copy.Offset = this.Offset;
-        copy.buckets = new long[this.buckets.Length];
+        var copy = new ExponentialHistogramBuckets
+        {
+            size = this.size,
+            Offset = this.Offset,
+            buckets = new long[this.buckets.Length],
+        };
         Array.Copy(this.buckets, copy.buckets, this.buckets.Length);
         return copy;
     }

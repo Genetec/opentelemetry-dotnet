@@ -102,7 +102,7 @@ using var meterProvider = Sdk.CreateMeterProviderBuilder()
 
 See [Program.cs](./Program.cs) for complete example.
 
-> **Note**
+> [!NOTE]
 > A common mistake while configuring `MeterProvider` is forgetting to
 add the required `Meter`s to the provider. It is recommended to leverage the
 wildcard subscription model where it makes sense. For example, if your
@@ -198,6 +198,7 @@ with the metric are of interest to you.
     MyFruitCounter.Add(1, new("name", "apple"), new("color", "red"));
     MyFruitCounter.Add(2, new("name", "lemon"), new("color", "yellow"));
     MyFruitCounter.Add(2, new("name", "apple"), new("color", "green"));
+    // Because "color" is dropped the resulting metric values are - name:apple LongSum Value:3 and name:lemon LongSum Value:2
     ...
 
     // If you provide an empty `string` array as `TagKeys` to the `MetricStreamConfiguration`
@@ -214,6 +215,7 @@ with the metric are of interest to you.
     MyFruitCounter.Add(1, new("name", "apple"), new("color", "red"));
     MyFruitCounter.Add(2, new("name", "lemon"), new("color", "yellow"));
     MyFruitCounter.Add(2, new("name", "apple"), new("color", "green"));
+    // Because both "name" and "color" are dropped the resulting metric value is - LongSum Value:5
     ...
 ```
 
@@ -321,7 +323,7 @@ within the maximum number of buckets defined by `MaxSize`. The default
     })
 ```
 
-> **Note**
+> [!NOTE]
 > The SDK currently does not support any changes to `Aggregation` type
 by using Views.
 
@@ -365,87 +367,27 @@ MyFruitCounter.Add(1, new("name", "apple"), new("color", "red"));
 AnotherFruitCounter.Add(1, new("name", "apple"), new("color", "red"));
 ```
 
-### Changing maximum MetricPoints per MetricStream
+### Changing the cardinality limit for a Metric
 
-A Metric stream can contain as many Metric points as the number of unique
-combination of keys and values. To protect the SDK from unbounded memory usage,
-SDK limits the maximum number of metric points per metric stream, to a default
-of 2000. Once the limit is hit, any new key/value combination for that metric is
-ignored. The SDK chooses the key/value combinations in the order in which they
-are emitted. `SetMaxMetricPointsPerMetricStream` can be used to override the
-default.
+To set the [cardinality limit](../README.md#cardinality-limits) for an
+individual metric, use `MetricStreamConfiguration.CardinalityLimit` setting on
+the View API:
 
-> **Note**
-> One `MetricPoint` is reserved for every `MetricStream` for the
-special case where there is no key/value pair associated with the metric. The
-maximum number of `MetricPoint`s has to accommodate for this special case.
-
-Consider the below example. Here we set the maximum number of `MetricPoint`s
-allowed to be `3`. This means that for every `MetricStream`, the SDK will export
-measurements for up to `3` distinct key/value combinations of the metric. There
-are two instruments published here: `MyFruitCounter` and `AnotherFruitCounter`.
-There are two total `MetricStream`s created one for each of these instruments.
-SDK will limit the maximum number of distinct key/value combinations for each of
-these `MetricStream`s to `3`.
+> [!NOTE]
+> `MetricStreamConfiguration.CardinalityLimit` is an experimental API only
+  available in pre-release builds. For details see:
+  [OTEL1003](../../diagnostics/experimental-apis/OTEL1003.md).
 
 ```csharp
-using System.Collections.Generic;
-using System.Diagnostics.Metrics;
-using OpenTelemetry;
-using OpenTelemetry.Metrics;
-
-Counter<long> MyFruitCounter = MyMeter.CreateCounter<long>("MyFruitCounter");
-Counter<long> AnotherFruitCounter = MyMeter.CreateCounter<long>("AnotherFruitCounter");
-
-using var meterProvider = Sdk.CreateMeterProviderBuilder()
-    .AddMeter("*")
+var meterProvider = Sdk.CreateMeterProviderBuilder()
+    .AddMeter("MyCompany.MyProduct.MyLibrary")
+    // Set a custom CardinalityLimit (10) for "MyFruitCounter"
+    .AddView(
+        instrumentName: "MyFruitCounter",
+        new MetricStreamConfiguration { CardinalityLimit = 10 })
     .AddConsoleExporter()
-    .SetMaxMetricPointsPerMetricStream(3) // The default value is 2000
     .Build();
-
-// There are four distinct key/value combinations emitted for `MyFruitCounter`:
-// 1. No key/value pair
-// 2. (name:apple, color:red)
-// 3. (name:lemon, color:yellow)
-// 4. (name:apple, color:green)
-
-// Since the maximum number of `MetricPoint`s allowed is `3`, the SDK will only export measurements for the following three combinations:
-// 1. No key/value pair
-// 2. (name:apple, color:red)
-// 3. (name:lemon, color:yellow)
-
-MyFruitCounter.Add(1); // Exported (No key/value pair)
-MyFruitCounter.Add(1, new("name", "apple"), new("color", "red")); // Exported
-MyFruitCounter.Add(2, new("name", "lemon"), new("color", "yellow")); // Exported
-MyFruitCounter.Add(1, new("name", "lemon"), new("color", "yellow")); // Exported
-MyFruitCounter.Add(2, new("name", "apple"), new("color", "green")); // Not exported
-MyFruitCounter.Add(5, new("name", "apple"), new("color", "red")); // Exported
-MyFruitCounter.Add(4, new("name", "lemon"), new("color", "yellow")); // Exported
-
-// There are four distinct key/value combinations emitted for `AnotherFruitCounter`:
-// 1. (name:kiwi)
-// 2. (name:banana, color:yellow)
-// 3. (name:mango, color:yellow)
-// 4. (name:banana, color:green)
-
-// Since the maximum number of `MetricPoint`s allowed is `3`, the SDK will only export measurements for the following three combinations:
-// 1. No key/value pair (This is a special case. The SDK reserves a `MetricPoint` for it even if it's not explicitly emitted.)
-// 2. (name:kiwi)
-// 3. (name:banana, color:yellow)
-
-AnotherFruitCounter.Add(4, new KeyValuePair<string, object>("name", "kiwi")); // Exported
-AnotherFruitCounter.Add(1, new("name", "banana"), new("color", "yellow")); // Exported
-AnotherFruitCounter.Add(2, new("name", "mango"), new("color", "yellow")); // Not exported
-AnotherFruitCounter.Add(1, new("name", "mango"), new("color", "yellow")); // Not exported
-AnotherFruitCounter.Add(2, new("name", "banana"), new("color", "green")); // Not exported
-AnotherFruitCounter.Add(5, new("name", "banana"), new("color", "yellow")); // Exported
-AnotherFruitCounter.Add(4, new("name", "mango"), new("color", "yellow")); // Not exported
 ```
-
-> **Note**
-> The above limit is *per* metric stream, and applies to all the metric
-streams. There is no ability to apply different limits for each instrument at
-this moment.
 
 ### Exemplars
 
@@ -470,26 +412,23 @@ exemplars.
 
 #### ExemplarFilter
 
-`ExemplarFilter` determines which measurements are eligible to become an
-Exemplar. i.e. `ExemplarFilter` determines which measurements are offered to
-`ExemplarReservoir`, which makes the final decision about whether the offered
-measurement gets stored as an exemplar. They can be used to control the noise
-and overhead associated with Exemplar collection.
+`ExemplarFilter` determines which measurements are offered to the configured
+`ExemplarReservoir`, which makes the final decision about whether or not the
+offered measurement gets recorded as an `Exemplar`. Generally `ExemplarFilter`
+is a mechanism to control the overhead associated with `Exemplar` offering.
 
-OpenTelemetry SDK comes with the following Filters:
+OpenTelemetry SDK comes with the following `ExemplarFilters` (defined on
+`ExemplarFilterType`):
 
-* `AlwaysOnExemplarFilter` - makes all measurements eligible for being an Exemplar.
-* `AlwaysOffExemplarFilter` - makes no measurements eligible for being an
-  Exemplar. Using this is as good as turning off Exemplar feature, and is the current
+* `AlwaysOff`: Makes no measurements eligible for becoming an `Exemplar`. Using
+  this is as good as turning off the `Exemplar` feature and is the current
   default.
-* `TraceBasedExemplarFilter` - makes those measurements eligible for being an
-Exemplar, which are recorded in the context of a sampled parent `Activity`
-(span).
+* `AlwaysOn`: Makes all measurements eligible for becoming an `Exemplar`.
+* `TraceBased`: Makes those measurements eligible for becoming an `Exemplar`
+  which are recorded in the context of a sampled `Activity` (span).
 
-`SetExemplarFilter` method on `MeterProviderBuilder` can be used to set the
-desired `ExemplarFilter`.
-
-The snippet below shows how to set `ExemplarFilter`.
+The `SetExemplarFilter` extension method on `MeterProviderBuilder` can be used
+to set the desired `ExemplarFilterType` and enable `Exemplar` collection:
 
 ```csharp
 using OpenTelemetry;
@@ -497,31 +436,14 @@ using OpenTelemetry.Metrics;
 
 using var meterProvider = Sdk.CreateMeterProviderBuilder()
     // rest of config not shown
-    .SetExemplarFilter(new TraceBasedExemplarFilter())
+    .SetExemplarFilter(ExemplarFilterType.TraceBased)
     .Build();
 ```
 
-> **Note**
-> As of today, there is no separate toggle for enable/disable Exemplar feature.
-Exemplars can be disabled by setting filter as `AlwaysOffExemplarFilter`, which
-is also the default (i.e Exemplar feature is disabled by default). Users can
-enable the feature by setting filter to anything other than
-`AlwaysOffExemplarFilter`. For example: `.SetExemplarFilter(new TraceBasedExemplarFilter())`.
-
-If the built-in `ExemplarFilter`s are not meeting the needs, one may author
-custom `ExemplarFilter` as shown
-[here](../extending-the-sdk/README.md#exemplarfilter). A custom filter, which
-eliminates all un-interesting measurements from becoming Exemplar is a
-recommended way to control performance overhead associated with collecting
-Exemplars. See
-[benchmark](../../../test/Benchmarks/Metrics/ExemplarBenchmarks.cs) to see how
-much impact can `ExemplarFilter` have on performance.
-
 #### ExemplarReservoir
 
-`ExemplarReservoir` receives the measurements sampled in by the `ExemplarFilter`
-and is responsible for storing Exemplars. `ExemplarReservoir` ultimately decides
-which measurements get stored as exemplars. The following are the default
+`ExemplarReservoir` receives the measurements sampled by the `ExemplarFilter`
+and is responsible for recording `Exemplar`s. The following are the default
 reservoirs:
 
 * `AlignedHistogramBucketExemplarReservoir` is the default reservoir used for
@@ -529,15 +451,15 @@ Histograms with buckets, and it stores at most one exemplar per histogram
 bucket. The exemplar stored is the last measurement recorded - i.e. any new
 measurement overwrites the previous one in that bucket.
 
-`SimpleExemplarReservoir` is the default reservoir used for all metrics except
-Histograms with buckets. It has a fixed reservoir pool, and implements the
-equivalent of [naive
+* `SimpleFixedSizeExemplarReservoir` is the default reservoir used for all
+metrics except Histograms with buckets. It has a fixed reservoir pool, and
+implements the equivalent of [naive
 reservoir](https://en.wikipedia.org/wiki/Reservoir_sampling). The reservoir pool
-size (currently defaulting to 10) determines the maximum number of exemplars
+size (currently defaulting to 1) determines the maximum number of exemplars
 stored.
 
-> **Note**
-> Currently there is no ability to change or configure Reservoir.
+> [!NOTE]
+> Currently there is no ability to change or configure `ExemplarReservoir`.
 
 ### Instrumentation
 
@@ -570,17 +492,32 @@ Refer to the individual exporter docs to learn how to use them:
 [Resource](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/sdk.md)
 is the immutable representation of the entity producing the telemetry. If no
 `Resource` is explicitly configured, the
-[default](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/semantic_conventions/README.md#semantic-attributes-with-sdk-provided-default-value)
+[default](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/resource/README.md#semantic-attributes-with-sdk-provided-default-value)
 is to use a resource indicating this
-[Service](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/semantic_conventions/README.md#service).
-The `ConfigureResource` method on `MeterProviderBuilder` can be used to set a
-configure the resource on the provider. When the provider is built, it
-automatically builds the final `Resource` from the configured `ResourceBuilder`.
-There can only be a single `Resource` associated with a
-provider. It is not possible to change the resource builder *after* the provider
-is built, by calling the `Build()` method on the `MeterProviderBuilder`.
+[Service](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/resource/README.md#service)
+and [Telemetry
+SDK](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/resource/README.md#telemetry-sdk).
+The `ConfigureResource` method on `MeterProviderBuilder` can be used to
+configure the resource on the provider. `ConfigureResource` accepts an `Action`
+to configure the `ResourceBuilder`. Multiple calls to `ConfigureResource` can be
+made. When the provider is built, it builds the final `Resource` combining all
+the `ConfigureResource` calls. There can only be a single `Resource` associated
+with a provider. It is not possible to change the resource builder *after* the
+provider is built, by calling the `Build()` method on the
+`MeterProviderBuilder`.
+
 `ResourceBuilder` offers various methods to construct resource comprising of
-multiple attributes from various sources.
+attributes from various sources. For example, `AddService()` adds
+[Service](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/resource/README.md#service)
+resource. `AddAttributes` can be used to add any additional attributes to the
+`Resource`. It also allows adding `ResourceDetector`s.
+
+It is recommended to model attributes that are static throughout the lifetime of
+the process as Resources, instead of adding them as attributes(tags) on each
+measurement.
+
+Follow [this](../../resources/README.md#resource-detector) document
+to learn about writing custom resource detectors.
 
 The snippet below shows configuring the `Resource` associated with the provider.
 
@@ -590,7 +527,12 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 
 using var meterProvider = Sdk.CreateMeterProviderBuilder()
-    .ConfigureResource(r => r.AddService("MyServiceName"))
+    .ConfigureResource(r => r.AddAttributes(new List<KeyValuePair<string, object>>
+                {
+                    new KeyValuePair<string, object>("static-attribute1", "v1"),
+                    new KeyValuePair<string, object>("static-attribute2", "v2"),
+                }))
+    .ConfigureResource(resourceBuilder => resourceBuilder.AddService("service-name"))
     .Build();
 ```
 

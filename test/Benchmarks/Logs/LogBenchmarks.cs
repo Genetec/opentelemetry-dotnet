@@ -1,18 +1,5 @@
-// <copyright file="LogBenchmarks.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.Logging;
@@ -20,102 +7,124 @@ using OpenTelemetry;
 using OpenTelemetry.Logs;
 
 /*
-// * Summary *
-
-BenchmarkDotNet=v0.13.1, OS=Windows 10.0.19044.1466 (21H2)
-Intel Core i7-4790 CPU 3.60GHz (Haswell), 1 CPU, 8 logical and 4 physical cores
-.NET SDK=6.0.101
-  [Host]     : .NET 6.0.1 (6.0.121.56705), X64 RyuJIT
-  DefaultJob : .NET 6.0.1 (6.0.121.56705), X64 RyuJIT
+BenchmarkDotNet v0.13.10, Windows 11 (10.0.22621.3007/22H2/2022Update/SunValley2)
+11th Gen Intel Core i7-1185G7 3.00GHz, 1 CPU, 8 logical and 4 physical cores
+.NET SDK 8.0.101
+  [Host]     : .NET 8.0.1 (8.0.123.58001), X64 RyuJIT AVX2
+  DefaultJob : .NET 8.0.1 (8.0.123.58001), X64 RyuJIT AVX2
 
 
-|                                 Method |       Mean |     Error |    StdDev |  Gen 0 | Allocated |
-|--------------------------------------- |-----------:|----------:|----------:|-------:|----------:|
-|                             NoListener |  72.365 ns | 0.9425 ns | 0.8817 ns | 0.0153 |      64 B |
-|   NoListenerWithLoggerMessageGenerator |   4.769 ns | 0.0161 ns | 0.0142 ns |      - |         - |
-|                           OneProcessor | 168.330 ns | 0.6198 ns | 0.5494 ns | 0.0553 |     232 B |
-| OneProcessorWithLoggerMessageGenerator | 142.898 ns | 0.5233 ns | 0.4086 ns | 0.0401 |     168 B |
-|                          TwoProcessors | 173.727 ns | 0.5978 ns | 0.4992 ns | 0.0553 |     232 B |
-|                        ThreeProcessors | 174.295 ns | 0.7697 ns | 0.7200 ns | 0.0553 |     232 B |
+| Method                        | Mean       | Error     | StdDev    | Gen0   | Allocated |
+|------------------------------ |-----------:|----------:|----------:|-------:|----------:|
+| NoListenerStringInterpolation | 124.458 ns | 2.5188 ns | 2.2329 ns | 0.0114 |      72 B |
+| NoListenerExtensionMethod     |  36.326 ns | 0.2916 ns | 0.2435 ns | 0.0102 |      64 B |
+| NoListener                    |   1.375 ns | 0.0586 ns | 0.0896 ns |      - |         - |
+| CreateLoggerRepeatedly        |  48.295 ns | 0.5951 ns | 0.4970 ns | 0.0038 |      24 B |
+| OneProcessor                  |  98.133 ns | 1.8805 ns | 1.5703 ns | 0.0063 |      40 B |
+| TwoProcessors                 | 105.414 ns | 0.4610 ns | 0.3850 ns | 0.0063 |      40 B |
+| ThreeProcessors               | 102.023 ns | 1.4187 ns | 1.1847 ns | 0.0063 |      40 B |
 */
 
-namespace Benchmarks.Logs
+namespace Benchmarks.Logs;
+
+public class LogBenchmarks
 {
-    public class LogBenchmarks
+    private const double FoodPrice = 2.99;
+    private static readonly string FoodName = "tomato";
+
+    private readonly ILogger loggerWithNoListener;
+    private readonly ILogger loggerWithOneProcessor;
+    private readonly ILogger loggerWithTwoProcessors;
+    private readonly ILogger loggerWithThreeProcessors;
+
+    private readonly ILoggerFactory loggerFactoryWithNoListener;
+    private readonly ILoggerFactory loggerFactoryWithOneProcessor;
+    private readonly ILoggerFactory loggerFactoryWithTwoProcessor;
+    private readonly ILoggerFactory loggerFactoryWithThreeProcessor;
+
+    public LogBenchmarks()
     {
-        private readonly ILogger loggerWithNoListener;
-        private readonly ILogger loggerWithOneProcessor;
-        private readonly ILogger loggerWithTwoProcessors;
-        private readonly ILogger loggerWithThreeProcessors;
+        this.loggerFactoryWithNoListener = LoggerFactory.Create(builder => { });
+        this.loggerWithNoListener = this.loggerFactoryWithNoListener.CreateLogger<LogBenchmarks>();
 
-        public LogBenchmarks()
+        this.loggerFactoryWithOneProcessor = LoggerFactory.Create(builder =>
         {
-            using var loggerFactoryWithNoListener = LoggerFactory.Create(builder => { });
-            this.loggerWithNoListener = loggerFactoryWithNoListener.CreateLogger<LogBenchmarks>();
+            builder.AddOpenTelemetry(options => options
+                .AddProcessor(new DummyLogProcessor()));
+        });
+        this.loggerWithOneProcessor = this.loggerFactoryWithOneProcessor.CreateLogger<LogBenchmarks>();
 
-            using var loggerFactoryWithOneProcessor = LoggerFactory.Create(builder =>
-            {
-                builder.AddOpenTelemetry(options => options
-                    .AddProcessor(new DummyLogProcessor()));
-            });
-            this.loggerWithOneProcessor = loggerFactoryWithOneProcessor.CreateLogger<LogBenchmarks>();
-
-            using var loggerFactoryWithTwoProcessor = LoggerFactory.Create(builder =>
-            {
-                builder.AddOpenTelemetry(options => options
-                    .AddProcessor(new DummyLogProcessor())
-                    .AddProcessor(new DummyLogProcessor()));
-            });
-            this.loggerWithTwoProcessors = loggerFactoryWithTwoProcessor.CreateLogger<LogBenchmarks>();
-
-            using var loggerFactoryWithThreeProcessor = LoggerFactory.Create(builder =>
-            {
-                builder.AddOpenTelemetry(options => options
-                    .AddProcessor(new DummyLogProcessor())
-                    .AddProcessor(new DummyLogProcessor())
-                    .AddProcessor(new DummyLogProcessor()));
-            });
-            this.loggerWithThreeProcessors = loggerFactoryWithThreeProcessor.CreateLogger<LogBenchmarks>();
-        }
-
-        [Benchmark]
-        public void NoListener()
+        this.loggerFactoryWithTwoProcessor = LoggerFactory.Create(builder =>
         {
-            this.loggerWithNoListener.LogInformation("Hello from {name} {price}.", "tomato", 2.99);
-        }
+            builder.AddOpenTelemetry(options => options
+                .AddProcessor(new DummyLogProcessor())
+                .AddProcessor(new DummyLogProcessor()));
+        });
+        this.loggerWithTwoProcessors = this.loggerFactoryWithTwoProcessor.CreateLogger<LogBenchmarks>();
 
-        [Benchmark]
-        public void NoListenerWithLoggerMessageGenerator()
+        this.loggerFactoryWithThreeProcessor = LoggerFactory.Create(builder =>
         {
-            Food.SayHello(this.loggerWithNoListener, "tomato", 2.99);
-        }
+            builder.AddOpenTelemetry(options => options
+                .AddProcessor(new DummyLogProcessor())
+                .AddProcessor(new DummyLogProcessor())
+                .AddProcessor(new DummyLogProcessor()));
+        });
+        this.loggerWithThreeProcessors = this.loggerFactoryWithThreeProcessor.CreateLogger<LogBenchmarks>();
+    }
 
-        [Benchmark]
-        public void OneProcessor()
-        {
-            this.loggerWithOneProcessor.LogInformation("Hello from {name} {price}.", "tomato", 2.99);
-        }
+    [GlobalCleanup]
+    public void GlobalCleanup()
+    {
+        this.loggerFactoryWithNoListener.Dispose();
+        this.loggerFactoryWithOneProcessor.Dispose();
+        this.loggerFactoryWithTwoProcessor.Dispose();
+        this.loggerFactoryWithThreeProcessor.Dispose();
+    }
 
-        [Benchmark]
-        public void OneProcessorWithLoggerMessageGenerator()
-        {
-            Food.SayHello(this.loggerWithOneProcessor, "tomato", 2.99);
-        }
+    [Benchmark]
+    public void NoListenerStringInterpolation()
+    {
+        this.loggerWithNoListener.LogInformation($"Hello from {FoodName} {FoodPrice}.");
+    }
 
-        [Benchmark]
-        public void TwoProcessors()
-        {
-            this.loggerWithTwoProcessors.LogInformation("Hello from {name} {price}.", "tomato", 2.99);
-        }
+    [Benchmark]
+    public void NoListenerExtensionMethod()
+    {
+        this.loggerWithNoListener.LogInformation("Hello from {name} {price}.", FoodName, FoodPrice);
+    }
 
-        [Benchmark]
-        public void ThreeProcessors()
-        {
-            this.loggerWithThreeProcessors.LogInformation("Hello from {name} {price}.", "tomato", 2.99);
-        }
+    [Benchmark]
+    public void NoListener()
+    {
+        Food.SayHello(this.loggerWithNoListener, FoodName, FoodPrice);
+    }
 
-        internal class DummyLogProcessor : BaseProcessor<LogRecord>
-        {
-        }
+    [Benchmark]
+    public void CreateLoggerRepeatedly()
+    {
+        var logger = this.loggerFactoryWithNoListener.CreateLogger<LogBenchmarks>();
+        Food.SayHello(logger, FoodName, FoodPrice);
+    }
+
+    [Benchmark]
+    public void OneProcessor()
+    {
+        Food.SayHello(this.loggerWithOneProcessor, FoodName, FoodPrice);
+    }
+
+    [Benchmark]
+    public void TwoProcessors()
+    {
+        Food.SayHello(this.loggerWithTwoProcessors, FoodName, FoodPrice);
+    }
+
+    [Benchmark]
+    public void ThreeProcessors()
+    {
+        Food.SayHello(this.loggerWithThreeProcessors, FoodName, FoodPrice);
+    }
+
+    internal class DummyLogProcessor : BaseProcessor<LogRecord>
+    {
     }
 }

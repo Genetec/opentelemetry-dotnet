@@ -37,13 +37,13 @@ telemetry is exported to a specific telemetry backend, how to sample the
 telemetry, etc. The API consists of [Tracing
 API](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md),
 [Logging
-API](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/overview.md),
+API](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/README.md),
 [Metrics
 API](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/api.md),
 [Context and Propagation
 API](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/context),
 and a set of [semantic
-conventions](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/trace/semantic_conventions).
+conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/general/trace.md).
 
 ### Tracing API
 
@@ -185,7 +185,7 @@ here as well.
 
     ```csharp
     static ActivitySource activitySource = new ActivitySource(
-        "companyname.product.instrumentationlibrary",
+        "MyCompany.MyProduct.MyLibrary",
         "1.0.0");
     ```
 
@@ -206,8 +206,10 @@ here as well.
     this activity are protected with a null check.
 
 4. Populate activity with tags following the [OpenTelemetry semantic
-   conventions](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/trace/semantic_conventions).
-   It is highly recommended to check `activity.IsAllDataRequested`, before
+   conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/general/trace.md),
+   using the
+   [SetTag](https://learn.microsoft.com/dotnet/api/system.diagnostics.activity.settag)
+   API. It is highly recommended to check `activity.IsAllDataRequested`, before
    populating any tags which are not readily available. `IsAllDataRequested` is
    the same as
    [Span.IsRecording](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#isrecording)
@@ -221,11 +223,6 @@ here as well.
         activity.SetTag("http.url", "http://www.mywebsite.com");
     }
     ```
-
-    The recommended way to [set span
-    attributes](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-attributes)
-    in `Activity` class is by using `SetTag()`. OpenTelemetry users should not
-    use other methods like `AddTag`, `SetCustomProperty` on `Activity`.
 
 5. Perform application/library logic.
 
@@ -311,7 +308,7 @@ chose not to sample this activity.
    Attributes](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-attributes).
    Earlier sample showed the usage of `SetTag` method of `Activity` to add tags.
    Refer to the
-   [specification](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/common/common.md#attribute-and-label-naming)
+   [specification](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/common/attribute-naming.md)
    for best practices on naming tags. It is also possible to provide an initial
    set of tags during activity creation, as shown below. It is recommended to
    provide all available `Tags` during activity creation itself, as
@@ -452,8 +449,9 @@ and
 [extract](../../examples/MicroserviceExample/Utils/Messaging/MessageReceiver.cs)
 context.
 
-**Note on instrumentation libraries**: If you are using the instrumentation
-libraries shipped from this repo [e.g. [ASP.NET
+> [!NOTE]
+> If you are using the instrumentation libraries shipped from this repo [e.g.
+[ASP.NET
 Core](https://github.com/open-telemetry/opentelemetry-dotnet/tree/main/src/OpenTelemetry.Instrumentation.AspNetCore)
 or
 [HttpClient](https://github.com/open-telemetry/opentelemetry-dotnet/tree/main/src/OpenTelemetry.Instrumentation.Http)],
@@ -503,7 +501,7 @@ Windows-based .NET implementation).
 
     The above requires import of the `System.Diagnostics.Metrics` namespace.
 
-    > **Note**
+    > [!NOTE]
     > It is important to note that `Meter` instances are created by
     using its constructor, and *not* by calling a `GetMeter` method on the
     `MeterProvider`. This is an important distinction from the [OpenTelemetry

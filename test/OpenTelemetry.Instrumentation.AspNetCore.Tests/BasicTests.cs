@@ -1,18 +1,5 @@
-// <copyright file="BasicTests.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
 using System.Text.Json;
@@ -22,8 +9,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Moq;
 using OpenTelemetry.Context.Propagation;
 using OpenTelemetry.Instrumentation.AspNetCore.Implementation;
 using OpenTelemetry.Tests;
@@ -32,151 +19,209 @@ using TestApp.AspNetCore;
 using TestApp.AspNetCore.Filters;
 using Xunit;
 
-namespace OpenTelemetry.Instrumentation.AspNetCore.Tests
+namespace OpenTelemetry.Instrumentation.AspNetCore.Tests;
+
+// See https://github.com/aspnet/Docs/tree/master/aspnetcore/test/integration-tests/samples/2.x/IntegrationTestsSample
+public sealed class BasicTests
+    : IClassFixture<WebApplicationFactory<Program>>, IDisposable
 {
-    // See https://github.com/aspnet/Docs/tree/master/aspnetcore/test/integration-tests/samples/2.x/IntegrationTestsSample
-    public sealed class BasicTests
-        : IClassFixture<WebApplicationFactory<Program>>, IDisposable
+    private readonly WebApplicationFactory<Program> factory;
+    private TracerProvider tracerProvider = null;
+
+    public BasicTests(WebApplicationFactory<Program> factory)
     {
-        private readonly WebApplicationFactory<Program> factory;
-        private TracerProvider tracerProvider = null;
+        this.factory = factory;
+    }
 
-        public BasicTests(WebApplicationFactory<Program> factory)
+    [Fact]
+    public void AddAspNetCoreInstrumentation_BadArgs()
+    {
+        TracerProviderBuilder builder = null;
+        Assert.Throws<ArgumentNullException>(() => builder.AddAspNetCoreInstrumentation());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StatusIsUnsetOn200Response(bool disableLogging)
+    {
+        var exportedItems = new List<Activity>();
+        void ConfigureTestServices(IServiceCollection services)
         {
-            this.factory = factory;
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation()
+                .AddInMemoryExporter(exportedItems)
+                .Build();
         }
 
-        [Fact]
-        public void AddAspNetCoreInstrumentation_BadArgs()
-        {
-            TracerProviderBuilder builder = null;
-            Assert.Throws<ArgumentNullException>(() => builder.AddAspNetCoreInstrumentation());
-        }
-
-        [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task StatusIsUnsetOn200Response(bool disableLogging)
-        {
-            var exportedItems = new List<Activity>();
-            void ConfigureTestServices(IServiceCollection services)
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
             {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                builder.ConfigureTestServices(ConfigureTestServices);
+                if (disableLogging)
+                {
+                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+                }
+            })
+            .CreateClient())
+        {
+            // Act
+            using var response = await client.GetAsync("/api/values");
+
+            // Assert
+            response.EnsureSuccessStatusCode(); // Status Code 200-299
+
+            WaitForActivityExport(exportedItems, 1);
+        }
+
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+
+        Assert.Equal(200, activity.GetTagValue(SemanticConventions.AttributeHttpResponseStatusCode));
+        Assert.Equal(ActivityStatusCode.Unset, activity.Status);
+        ValidateAspNetCoreActivity(activity, "/api/values");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SuccessfulTemplateControllerCallGeneratesASpan(bool shouldEnrich)
+    {
+        var exportedItems = new List<Activity>();
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation(options =>
+                {
+                    if (shouldEnrich)
+                    {
+                        options.EnrichWithHttpRequest = (activity, request) => { activity.SetTag("enrichedOnStart", "yes"); };
+                        options.EnrichWithHttpResponse = (activity, response) => { activity.SetTag("enrichedOnStop", "yes"); };
+                    }
+                })
+                .AddInMemoryExporter(exportedItems)
+                .Build();
+        }
+
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            // Act
+            using var response = await client.GetAsync("/api/values");
+
+            // Assert
+            response.EnsureSuccessStatusCode(); // Status Code 200-299
+
+            WaitForActivityExport(exportedItems, 1);
+        }
+
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+
+        if (shouldEnrich)
+        {
+            Assert.NotEmpty(activity.Tags.Where(tag => tag.Key == "enrichedOnStart" && tag.Value == "yes"));
+            Assert.NotEmpty(activity.Tags.Where(tag => tag.Key == "enrichedOnStop" && tag.Value == "yes"));
+        }
+
+        ValidateAspNetCoreActivity(activity, "/api/values");
+    }
+
+    [Fact]
+    public async Task SuccessfulTemplateControllerCallUsesParentContext()
+    {
+        var exportedItems = new List<Activity>();
+        var expectedTraceId = ActivityTraceId.CreateRandom();
+        var expectedSpanId = ActivitySpanId.CreateRandom();
+
+        // Arrange
+        using (var testFactory = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(services =>
+                {
+                    this.tracerProvider = Sdk.CreateTracerProviderBuilder()
                     .AddAspNetCoreInstrumentation()
                     .AddInMemoryExporter(exportedItems)
                     .Build();
-            }
+                });
 
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    if (disableLogging)
-                    {
-                        builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                    }
-                })
-                .CreateClient())
-            {
-                // Act
-                using var response = await client.GetAsync("/api/values").ConfigureAwait(false);
-
-                // Assert
-                response.EnsureSuccessStatusCode(); // Status Code 200-299
-
-                WaitForActivityExport(exportedItems, 1);
-            }
-
-            Assert.Single(exportedItems);
-            var activity = exportedItems[0];
-
-            Assert.Equal(200, activity.GetTagValue(SemanticConventions.AttributeHttpStatusCode));
-            Assert.Equal(ActivityStatusCode.Unset, activity.Status);
-            ValidateAspNetCoreActivity(activity, "/api/values");
-        }
-
-        [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task SuccessfulTemplateControllerCallGeneratesASpan(bool shouldEnrich)
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            }))
         {
-            var exportedItems = new List<Activity>();
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation(options =>
-                    {
-                        if (shouldEnrich)
-                        {
-                            options.EnrichWithHttpRequest = (activity, request) => { activity.SetTag("enrichedOnStart", "yes"); };
-                            options.EnrichWithHttpResponse = (activity, response) => { activity.SetTag("enrichedOnStop", "yes"); };
-                        }
-                    })
-                    .AddInMemoryExporter(exportedItems)
-                    .Build();
-            }
+            using var client = testFactory.CreateClient();
+            var request = new HttpRequestMessage(HttpMethod.Get, "/api/values/2");
+            request.Headers.Add("traceparent", $"00-{expectedTraceId}-{expectedSpanId}-01");
 
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                // Act
-                using var response = await client.GetAsync("/api/values").ConfigureAwait(false);
+            // Act
+            var response = await client.SendAsync(request);
 
-                // Assert
-                response.EnsureSuccessStatusCode(); // Status Code 200-299
+            // Assert
+            response.EnsureSuccessStatusCode(); // Status Code 200-299
 
-                WaitForActivityExport(exportedItems, 1);
-            }
-
-            Assert.Single(exportedItems);
-            var activity = exportedItems[0];
-
-            if (shouldEnrich)
-            {
-                Assert.NotEmpty(activity.Tags.Where(tag => tag.Key == "enrichedOnStart" && tag.Value == "yes"));
-                Assert.NotEmpty(activity.Tags.Where(tag => tag.Key == "enrichedOnStop" && tag.Value == "yes"));
-            }
-
-            ValidateAspNetCoreActivity(activity, "/api/values");
+            WaitForActivityExport(exportedItems, 1);
         }
 
-        [Fact]
-        public async Task SuccessfulTemplateControllerCallUsesParentContext()
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+
+        Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", activity.OperationName);
+
+        Assert.Equal(expectedTraceId, activity.Context.TraceId);
+        Assert.Equal(expectedSpanId, activity.ParentSpanId);
+
+        ValidateAspNetCoreActivity(activity, "/api/values/2");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CustomPropagator(bool addSampler)
+    {
+        try
         {
             var exportedItems = new List<Activity>();
             var expectedTraceId = ActivityTraceId.CreateRandom();
             var expectedSpanId = ActivitySpanId.CreateRandom();
 
+            var propagator = new CustomTextMapPropagator
+            {
+                TraceId = expectedTraceId,
+                SpanId = expectedSpanId,
+            };
+
             // Arrange
             using (var testFactory = this.factory
                 .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(services =>
                     {
-                        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                        .AddAspNetCoreInstrumentation()
-                        .AddInMemoryExporter(exportedItems)
-                        .Build();
-                    });
+                        builder.ConfigureTestServices(services =>
+                        {
+                            Sdk.SetDefaultTextMapPropagator(propagator);
+                            var tracerProviderBuilder = Sdk.CreateTracerProviderBuilder();
 
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                }))
+                            if (addSampler)
+                            {
+                                tracerProviderBuilder
+                                    .SetSampler(new TestSampler(SamplingDecision.RecordAndSample, new Dictionary<string, object> { { "SomeTag", "SomeKey" }, }));
+                            }
+
+                            this.tracerProvider = tracerProviderBuilder
+                                                    .AddAspNetCoreInstrumentation()
+                                                    .AddInMemoryExporter(exportedItems)
+                                                    .Build();
+                        });
+                        builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+                    }))
             {
                 using var client = testFactory.CreateClient();
-                var request = new HttpRequestMessage(HttpMethod.Get, "/api/values/2");
-                request.Headers.Add("traceparent", $"00-{expectedTraceId}-{expectedSpanId}-01");
-
-                // Act
-                var response = await client.SendAsync(request).ConfigureAwait(false);
-
-                // Assert
+                using var response = await client.GetAsync("/api/values/2");
                 response.EnsureSuccessStatusCode(); // Status Code 200-299
 
                 WaitForActivityExport(exportedItems, 1);
@@ -185,731 +230,256 @@ namespace OpenTelemetry.Instrumentation.AspNetCore.Tests
             Assert.Single(exportedItems);
             var activity = exportedItems[0];
 
-            Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", activity.OperationName);
-            Assert.Equal("api/Values/{id}", activity.DisplayName);
+            Assert.True(activity.Duration != TimeSpan.Zero);
 
             Assert.Equal(expectedTraceId, activity.Context.TraceId);
             Assert.Equal(expectedSpanId, activity.ParentSpanId);
 
             ValidateAspNetCoreActivity(activity, "/api/values/2");
         }
-
-        [Fact]
-        public async Task CustomPropagator()
+        finally
         {
-            try
+            Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(new TextMapPropagator[]
             {
-                var exportedItems = new List<Activity>();
-                var expectedTraceId = ActivityTraceId.CreateRandom();
-                var expectedSpanId = ActivitySpanId.CreateRandom();
+                new TraceContextPropagator(),
+                new BaggagePropagator(),
+            }));
+        }
+    }
 
-                var propagator = new Mock<TextMapPropagator>();
-                propagator.Setup(m => m.Extract(It.IsAny<PropagationContext>(), It.IsAny<HttpRequest>(), It.IsAny<Func<HttpRequest, string, IEnumerable<string>>>())).Returns(
-                    new PropagationContext(
-                        new ActivityContext(
-                            expectedTraceId,
-                            expectedSpanId,
-                            ActivityTraceFlags.Recorded),
-                        default));
+    [Fact]
+    public async Task RequestNotCollectedWhenFilterIsApplied()
+    {
+        var exportedItems = new List<Activity>();
 
-                // Arrange
-                using (var testFactory = this.factory
-                    .WithWebHostBuilder(builder =>
-                        {
-                            builder.ConfigureTestServices(services =>
-                            {
-                                Sdk.SetDefaultTextMapPropagator(propagator.Object);
-                                this.tracerProvider = Sdk.CreateTracerProviderBuilder().AddAspNetCoreInstrumentation().AddInMemoryExporter(exportedItems).Build();
-                            });
-                            builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                        }))
-                {
-                    using var client = testFactory.CreateClient();
-                    using var response = await client.GetAsync("/api/values/2").ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode(); // Status Code 200-299
-
-                    WaitForActivityExport(exportedItems, 1);
-                }
-
-                Assert.Single(exportedItems);
-                var activity = exportedItems[0];
-
-                Assert.True(activity.Duration != TimeSpan.Zero);
-                Assert.Equal("api/Values/{id}", activity.DisplayName);
-
-                Assert.Equal(expectedTraceId, activity.Context.TraceId);
-                Assert.Equal(expectedSpanId, activity.ParentSpanId);
-
-                ValidateAspNetCoreActivity(activity, "/api/values/2");
-            }
-            finally
-            {
-                Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(new TextMapPropagator[]
-                {
-                    new TraceContextPropagator(),
-                    new BaggagePropagator(),
-                }));
-            }
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation((opt) => opt.Filter = (ctx) => ctx.Request.Path != "/api/values/2")
+                .AddInMemoryExporter(exportedItems)
+                .Build();
         }
 
-        [Fact]
-        public async Task RequestNotCollectedWhenFilterIsApplied()
+        // Arrange
+        using (var testFactory = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            }))
         {
-            var exportedItems = new List<Activity>();
-
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation((opt) => opt.Filter = (ctx) => ctx.Request.Path != "/api/values/2")
-                    .AddInMemoryExporter(exportedItems)
-                    .Build();
-            }
-
-            // Arrange
-            using (var testFactory = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                }))
-            {
-                using var client = testFactory.CreateClient();
-
-                // Act
-                using var response1 = await client.GetAsync("/api/values").ConfigureAwait(false);
-                using var response2 = await client.GetAsync("/api/values/2").ConfigureAwait(false);
-
-                // Assert
-                response1.EnsureSuccessStatusCode(); // Status Code 200-299
-                response2.EnsureSuccessStatusCode(); // Status Code 200-299
-
-                WaitForActivityExport(exportedItems, 1);
-            }
-
-            Assert.Single(exportedItems);
-            var activity = exportedItems[0];
-
-            ValidateAspNetCoreActivity(activity, "/api/values");
-        }
-
-        [Fact]
-        public async Task RequestNotCollectedWhenFilterThrowException()
-        {
-            var exportedItems = new List<Activity>();
-
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation((opt) => opt.Filter = (ctx) =>
-                    {
-                        if (ctx.Request.Path == "/api/values/2")
-                        {
-                            throw new Exception("from InstrumentationFilter");
-                        }
-                        else
-                        {
-                            return true;
-                        }
-                    })
-                    .AddInMemoryExporter(exportedItems)
-                    .Build();
-            }
-
-            // Arrange
-            using (var testFactory = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                }))
-            {
-                using var client = testFactory.CreateClient();
-
-                // Act
-                using (var inMemoryEventListener = new InMemoryEventListener(AspNetCoreInstrumentationEventSource.Log))
-                {
-                    using var response1 = await client.GetAsync("/api/values").ConfigureAwait(false);
-                    using var response2 = await client.GetAsync("/api/values/2").ConfigureAwait(false);
-
-                    response1.EnsureSuccessStatusCode(); // Status Code 200-299
-                    response2.EnsureSuccessStatusCode(); // Status Code 200-299
-                    Assert.Single(inMemoryEventListener.Events.Where((e) => e.EventId == 3));
-                }
-
-                WaitForActivityExport(exportedItems, 1);
-            }
-
-            // As InstrumentationFilter threw, we continue as if the
-            // InstrumentationFilter did not exist.
-
-            Assert.Single(exportedItems);
-            var activity = exportedItems[0];
-            ValidateAspNetCoreActivity(activity, "/api/values");
-        }
-
-        [Theory]
-        [InlineData(SamplingDecision.Drop)]
-        [InlineData(SamplingDecision.RecordOnly)]
-        [InlineData(SamplingDecision.RecordAndSample)]
-        public async Task ExtractContextIrrespectiveOfSamplingDecision(SamplingDecision samplingDecision)
-        {
-            try
-            {
-                var expectedTraceId = ActivityTraceId.CreateRandom();
-                var expectedParentSpanId = ActivitySpanId.CreateRandom();
-                var expectedTraceState = "rojo=1,congo=2";
-                var activityContext = new ActivityContext(expectedTraceId, expectedParentSpanId, ActivityTraceFlags.Recorded, expectedTraceState, true);
-                var expectedBaggage = Baggage.SetBaggage("key1", "value1").SetBaggage("key2", "value2");
-                Sdk.SetDefaultTextMapPropagator(new ExtractOnlyPropagator(activityContext, expectedBaggage));
-
-                // Arrange
-                using var testFactory = this.factory
-                    .WithWebHostBuilder(builder =>
-                        {
-                            builder.ConfigureTestServices(services => { this.tracerProvider = Sdk.CreateTracerProviderBuilder().SetSampler(new TestSampler(samplingDecision)).AddAspNetCoreInstrumentation().Build(); });
-                            builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                        });
-                using var client = testFactory.CreateClient();
-
-                // Test TraceContext Propagation
-                var request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityTraceContext");
-                var response = await client.SendAsync(request).ConfigureAwait(false);
-                var childActivityTraceContext = JsonSerializer.Deserialize<Dictionary<string, string>>(response.Content.ReadAsStringAsync().Result);
-
-                response.EnsureSuccessStatusCode();
-
-                Assert.Equal(expectedTraceId.ToString(), childActivityTraceContext["TraceId"]);
-                Assert.Equal(expectedTraceState, childActivityTraceContext["TraceState"]);
-                Assert.NotEqual(expectedParentSpanId.ToString(), childActivityTraceContext["ParentSpanId"]); // there is a new activity created in instrumentation therefore the ParentSpanId is different that what is provided in the headers
-
-                // Test Baggage Context Propagation
-                request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityBaggageContext");
-
-                response = await client.SendAsync(request).ConfigureAwait(false);
-                var childActivityBaggageContext = JsonSerializer.Deserialize<IReadOnlyDictionary<string, string>>(response.Content.ReadAsStringAsync().Result);
-
-                response.EnsureSuccessStatusCode();
-
-                Assert.Single(childActivityBaggageContext, item => item.Key == "key1" && item.Value == "value1");
-                Assert.Single(childActivityBaggageContext, item => item.Key == "key2" && item.Value == "value2");
-            }
-            finally
-            {
-                Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(new TextMapPropagator[]
-                {
-                    new TraceContextPropagator(),
-                    new BaggagePropagator(),
-                }));
-            }
-        }
-
-        [Fact]
-        public async Task ExtractContextIrrespectiveOfTheFilterApplied()
-        {
-            try
-            {
-                var expectedTraceId = ActivityTraceId.CreateRandom();
-                var expectedParentSpanId = ActivitySpanId.CreateRandom();
-                var expectedTraceState = "rojo=1,congo=2";
-                var activityContext = new ActivityContext(expectedTraceId, expectedParentSpanId, ActivityTraceFlags.Recorded, expectedTraceState);
-                var expectedBaggage = Baggage.SetBaggage("key1", "value1").SetBaggage("key2", "value2");
-                Sdk.SetDefaultTextMapPropagator(new ExtractOnlyPropagator(activityContext, expectedBaggage));
-
-                // Arrange
-                bool isFilterCalled = false;
-                using var testFactory = this.factory
-                    .WithWebHostBuilder(builder =>
-                    {
-                        builder.ConfigureTestServices(services =>
-                        {
-                            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                                .AddAspNetCoreInstrumentation(options =>
-                                {
-                                    options.Filter = context =>
-                                    {
-                                        isFilterCalled = true;
-                                        return false;
-                                    };
-                                })
-                                .Build();
-                        });
-                        builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                    });
-                using var client = testFactory.CreateClient();
-
-                // Test TraceContext Propagation
-                var request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityTraceContext");
-                var response = await client.SendAsync(request).ConfigureAwait(false);
-
-                // Ensure that filter was called
-                Assert.True(isFilterCalled);
-
-                var childActivityTraceContext = JsonSerializer.Deserialize<Dictionary<string, string>>(response.Content.ReadAsStringAsync().Result);
-
-                response.EnsureSuccessStatusCode();
-
-                Assert.Equal(expectedTraceId.ToString(), childActivityTraceContext["TraceId"]);
-                Assert.Equal(expectedTraceState, childActivityTraceContext["TraceState"]);
-                Assert.NotEqual(expectedParentSpanId.ToString(), childActivityTraceContext["ParentSpanId"]); // there is a new activity created in instrumentation therefore the ParentSpanId is different that what is provided in the headers
-
-                // Test Baggage Context Propagation
-                request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityBaggageContext");
-
-                response = await client.SendAsync(request).ConfigureAwait(false);
-                var childActivityBaggageContext = JsonSerializer.Deserialize<IReadOnlyDictionary<string, string>>(response.Content.ReadAsStringAsync().Result);
-
-                response.EnsureSuccessStatusCode();
-
-                Assert.Single(childActivityBaggageContext, item => item.Key == "key1" && item.Value == "value1");
-                Assert.Single(childActivityBaggageContext, item => item.Key == "key2" && item.Value == "value2");
-            }
-            finally
-            {
-                Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(new TextMapPropagator[]
-                {
-                    new TraceContextPropagator(),
-                    new BaggagePropagator(),
-                }));
-            }
-        }
-
-        [Fact]
-        public async Task BaggageIsNotClearedWhenActivityStopped()
-        {
-            int? baggageCountAfterStart = null;
-            int? baggageCountAfterStop = null;
-            using EventWaitHandle stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset);
-
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation(
-                        new TestHttpInListener(new AspNetCoreInstrumentationOptions())
-                        {
-                            OnEventWrittenCallback = (name, payload) =>
-                            {
-                                switch (name)
-                                {
-                                    case HttpInListener.OnStartEvent:
-                                        {
-                                            baggageCountAfterStart = Baggage.Current.Count;
-                                        }
-
-                                        break;
-                                    case HttpInListener.OnStopEvent:
-                                        {
-                                            baggageCountAfterStop = Baggage.Current.Count;
-                                            stopSignal.Set();
-                                        }
-
-                                        break;
-                                }
-                            },
-                        })
-                    .Build();
-            }
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/values");
-
-                request.Headers.TryAddWithoutValidation("baggage", "TestKey1=123,TestKey2=456");
-
-                // Act
-                using var response = await client.SendAsync(request).ConfigureAwait(false);
-            }
-
-            stopSignal.WaitOne(5000);
-
-            // Assert
-            Assert.NotNull(baggageCountAfterStart);
-            Assert.Equal(2, baggageCountAfterStart);
-            Assert.NotNull(baggageCountAfterStop);
-            Assert.Equal(2, baggageCountAfterStop);
-        }
-
-        [Theory]
-        [InlineData(SamplingDecision.Drop, false, false)]
-        [InlineData(SamplingDecision.RecordOnly, true, true)]
-        [InlineData(SamplingDecision.RecordAndSample, true, true)]
-        public async Task FilterAndEnrichAreOnlyCalledWhenSampled(SamplingDecision samplingDecision, bool shouldFilterBeCalled, bool shouldEnrichBeCalled)
-        {
-            bool filterCalled = false;
-            bool enrichWithHttpRequestCalled = false;
-            bool enrichWithHttpResponseCalled = false;
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .SetSampler(new TestSampler(samplingDecision))
-                    .AddAspNetCoreInstrumentation(options =>
-                    {
-                        options.Filter = (context) =>
-                        {
-                            filterCalled = true;
-                            return true;
-                        };
-                        options.EnrichWithHttpRequest = (activity, request) =>
-                        {
-                            enrichWithHttpRequestCalled = true;
-                        };
-                        options.EnrichWithHttpResponse = (activity, request) =>
-                        {
-                            enrichWithHttpResponseCalled = true;
-                        };
-                    })
-                    .Build();
-            }
-
-            // Arrange
-            using var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient();
+            using var client = testFactory.CreateClient();
 
             // Act
-            using var response = await client.GetAsync("/api/values").ConfigureAwait(false);
+            using var response1 = await client.GetAsync("/api/values");
+            using var response2 = await client.GetAsync("/api/values/2");
 
             // Assert
-            Assert.Equal(shouldFilterBeCalled, filterCalled);
-            Assert.Equal(shouldEnrichBeCalled, enrichWithHttpRequestCalled);
-            Assert.Equal(shouldEnrichBeCalled, enrichWithHttpResponseCalled);
+            response1.EnsureSuccessStatusCode(); // Status Code 200-299
+            response2.EnsureSuccessStatusCode(); // Status Code 200-299
+
+            WaitForActivityExport(exportedItems, 1);
         }
 
-        [Fact]
-        public async Task ActivitiesStartedInMiddlewareShouldNotBeUpdated()
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+
+        ValidateAspNetCoreActivity(activity, "/api/values");
+    }
+
+    [Fact]
+    public async Task RequestNotCollectedWhenFilterThrowException()
+    {
+        var exportedItems = new List<Activity>();
+
+        void ConfigureTestServices(IServiceCollection services)
         {
-            var exportedItems = new List<Activity>();
-
-            var activitySourceName = "TestMiddlewareActivitySource";
-            var activityName = "TestMiddlewareActivity";
-
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                services.AddSingleton<ActivityMiddleware.ActivityMiddlewareImpl>(new TestActivityMiddlewareImpl(activitySourceName, activityName));
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation()
-                    .AddSource(activitySourceName)
-                    .AddInMemoryExporter(exportedItems)
-                    .Build();
-            }
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation((opt) => opt.Filter = (ctx) =>
                 {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                using var response = await client.GetAsync("/api/values/2").ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                WaitForActivityExport(exportedItems, 2);
-            }
-
-            Assert.Equal(2, exportedItems.Count);
-
-            var middlewareActivity = exportedItems[0];
-
-            var aspnetcoreframeworkactivity = exportedItems[1];
-
-            // Middleware activity name should not be changed
-            Assert.Equal(ActivityKind.Internal, middlewareActivity.Kind);
-            Assert.Equal(activityName, middlewareActivity.OperationName);
-            Assert.Equal(activityName, middlewareActivity.DisplayName);
-
-            // tag http.route should be added on activity started by asp.net core
-            Assert.Equal("api/Values/{id}", aspnetcoreframeworkactivity.GetTagValue(SemanticConventions.AttributeHttpRoute) as string);
-            Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", aspnetcoreframeworkactivity.OperationName);
-            Assert.Equal("api/Values/{id}", aspnetcoreframeworkactivity.DisplayName);
-        }
-
-        [Fact]
-        public async Task ActivitiesStartedInMiddlewareBySettingHostActivityToNullShouldNotBeUpdated()
-        {
-            var exportedItems = new List<Activity>();
-
-            var activitySourceName = "TestMiddlewareActivitySource";
-            var activityName = "TestMiddlewareActivity";
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices((IServiceCollection services) =>
+                    if (ctx.Request.Path == "/api/values/2")
                     {
-                        services.AddSingleton<ActivityMiddleware.ActivityMiddlewareImpl>(new TestNullHostActivityMiddlewareImpl(activitySourceName, activityName));
-                        services.AddOpenTelemetry()
-                            .WithTracing(builder => builder
-                                .AddAspNetCoreInstrumentation()
-                                .AddSource(activitySourceName)
-                                .AddInMemoryExporter(exportedItems));
+                        throw new Exception("from InstrumentationFilter");
+                    }
+                    else
+                    {
+                        return true;
+                    }
+                })
+                .AddInMemoryExporter(exportedItems)
+                .Build();
+        }
+
+        // Arrange
+        using (var testFactory = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            }))
+        {
+            using var client = testFactory.CreateClient();
+
+            // Act
+            using (var inMemoryEventListener = new InMemoryEventListener(AspNetCoreInstrumentationEventSource.Log))
+            {
+                using var response1 = await client.GetAsync("/api/values");
+                using var response2 = await client.GetAsync("/api/values/2");
+
+                response1.EnsureSuccessStatusCode(); // Status Code 200-299
+                response2.EnsureSuccessStatusCode(); // Status Code 200-299
+                Assert.Single(inMemoryEventListener.Events.Where((e) => e.EventId == 3));
+            }
+
+            WaitForActivityExport(exportedItems, 1);
+        }
+
+        // As InstrumentationFilter threw, we continue as if the
+        // InstrumentationFilter did not exist.
+
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+        ValidateAspNetCoreActivity(activity, "/api/values");
+    }
+
+    [Theory]
+    [InlineData(SamplingDecision.Drop)]
+    [InlineData(SamplingDecision.RecordOnly)]
+    [InlineData(SamplingDecision.RecordAndSample)]
+    public async Task ExtractContextIrrespectiveOfSamplingDecision(SamplingDecision samplingDecision)
+    {
+        try
+        {
+            var expectedTraceId = ActivityTraceId.CreateRandom();
+            var expectedParentSpanId = ActivitySpanId.CreateRandom();
+            var expectedTraceState = "rojo=1,congo=2";
+            var activityContext = new ActivityContext(expectedTraceId, expectedParentSpanId, ActivityTraceFlags.Recorded, expectedTraceState, true);
+            var expectedBaggage = Baggage.SetBaggage("key1", "value1").SetBaggage("key2", "value2");
+            Sdk.SetDefaultTextMapPropagator(new ExtractOnlyPropagator(activityContext, expectedBaggage));
+
+            // Arrange
+            using var testFactory = this.factory
+                .WithWebHostBuilder(builder =>
+                    {
+                        builder.ConfigureTestServices(services => { this.tracerProvider = Sdk.CreateTracerProviderBuilder().SetSampler(new TestSampler(samplingDecision)).AddAspNetCoreInstrumentation().Build(); });
+                        builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+                    });
+            using var client = testFactory.CreateClient();
+
+            // Test TraceContext Propagation
+            var request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityTraceContext");
+            var response = await client.SendAsync(request);
+            var childActivityTraceContext = JsonSerializer.Deserialize<Dictionary<string, string>>(await response.Content.ReadAsStringAsync());
+
+            response.EnsureSuccessStatusCode();
+
+            Assert.Equal(expectedTraceId.ToString(), childActivityTraceContext["TraceId"]);
+            Assert.Equal(expectedTraceState, childActivityTraceContext["TraceState"]);
+            Assert.NotEqual(expectedParentSpanId.ToString(), childActivityTraceContext["ParentSpanId"]); // there is a new activity created in instrumentation therefore the ParentSpanId is different that what is provided in the headers
+
+            // Test Baggage Context Propagation
+            request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityBaggageContext");
+
+            response = await client.SendAsync(request);
+            var childActivityBaggageContext = JsonSerializer.Deserialize<IReadOnlyDictionary<string, string>>(await response.Content.ReadAsStringAsync());
+
+            response.EnsureSuccessStatusCode();
+
+            Assert.Single(childActivityBaggageContext, item => item.Key == "key1" && item.Value == "value1");
+            Assert.Single(childActivityBaggageContext, item => item.Key == "key2" && item.Value == "value2");
+        }
+        finally
+        {
+            Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(new TextMapPropagator[]
+            {
+                new TraceContextPropagator(),
+                new BaggagePropagator(),
+            }));
+        }
+    }
+
+    [Fact]
+    public async Task ExtractContextIrrespectiveOfTheFilterApplied()
+    {
+        try
+        {
+            var expectedTraceId = ActivityTraceId.CreateRandom();
+            var expectedParentSpanId = ActivitySpanId.CreateRandom();
+            var expectedTraceState = "rojo=1,congo=2";
+            var activityContext = new ActivityContext(expectedTraceId, expectedParentSpanId, ActivityTraceFlags.Recorded, expectedTraceState);
+            var expectedBaggage = Baggage.SetBaggage("key1", "value1").SetBaggage("key2", "value2");
+            Sdk.SetDefaultTextMapPropagator(new ExtractOnlyPropagator(activityContext, expectedBaggage));
+
+            // Arrange
+            bool isFilterCalled = false;
+            using var testFactory = this.factory
+                .WithWebHostBuilder(builder =>
+                {
+                    builder.ConfigureTestServices(services =>
+                    {
+                        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                            .AddAspNetCoreInstrumentation(options =>
+                            {
+                                options.Filter = context =>
+                                {
+                                    isFilterCalled = true;
+                                    return false;
+                                };
+                            })
+                            .Build();
                     });
                     builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                using var response = await client.GetAsync("/api/values/2").ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                WaitForActivityExport(exportedItems, 2);
-            }
+                });
+            using var client = testFactory.CreateClient();
 
-            Assert.Equal(2, exportedItems.Count);
+            // Test TraceContext Propagation
+            var request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityTraceContext");
+            var response = await client.SendAsync(request);
 
-            var middlewareActivity = exportedItems[0];
+            // Ensure that filter was called
+            Assert.True(isFilterCalled);
 
-            var aspnetcoreframeworkactivity = exportedItems[1];
+            var childActivityTraceContext = JsonSerializer.Deserialize<Dictionary<string, string>>(await response.Content.ReadAsStringAsync());
 
-            // Middleware activity name should not be changed
-            Assert.Equal(ActivityKind.Internal, middlewareActivity.Kind);
-            Assert.Equal(activityName, middlewareActivity.OperationName);
-            Assert.Equal(activityName, middlewareActivity.DisplayName);
+            response.EnsureSuccessStatusCode();
 
-            // tag http.route should not be added on activity started by asp.net core as it will not be found during OnEventWritten event
-            Assert.DoesNotContain(aspnetcoreframeworkactivity.TagObjects, t => t.Key == SemanticConventions.AttributeHttpRoute);
-            Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", aspnetcoreframeworkactivity.OperationName);
-            Assert.Equal("/api/values/2", aspnetcoreframeworkactivity.DisplayName);
+            Assert.Equal(expectedTraceId.ToString(), childActivityTraceContext["TraceId"]);
+            Assert.Equal(expectedTraceState, childActivityTraceContext["TraceState"]);
+            Assert.NotEqual(expectedParentSpanId.ToString(), childActivityTraceContext["ParentSpanId"]); // there is a new activity created in instrumentation therefore the ParentSpanId is different that what is provided in the headers
+
+            // Test Baggage Context Propagation
+            request = new HttpRequestMessage(HttpMethod.Get, "/api/GetChildActivityBaggageContext");
+
+            response = await client.SendAsync(request);
+            var childActivityBaggageContext = JsonSerializer.Deserialize<IReadOnlyDictionary<string, string>>(await response.Content.ReadAsStringAsync());
+
+            response.EnsureSuccessStatusCode();
+
+            Assert.Single(childActivityBaggageContext, item => item.Key == "key1" && item.Value == "value1");
+            Assert.Single(childActivityBaggageContext, item => item.Key == "key2" && item.Value == "value2");
         }
-
-#if NET7_0_OR_GREATER
-        [Fact]
-        public async Task UserRegisteredActivitySourceIsUsedForActivityCreationByAspNetCore()
+        finally
         {
-            var exportedItems = new List<Activity>();
-            void ConfigureTestServices(IServiceCollection services)
+            Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(new TextMapPropagator[]
             {
-                services.AddOpenTelemetry()
-                    .WithTracing(builder => builder
-                        .AddAspNetCoreInstrumentation()
-                        .AddInMemoryExporter(exportedItems));
-
-                // Register ActivitySource here so that it will be used
-                // by ASP.NET Core to create activities
-                // https://github.com/dotnet/aspnetcore/blob/0e5cbf447d329a1e7d69932c3decd1c70a00fbba/src/Hosting/Hosting/src/Internal/WebHost.cs#L152
-                services.AddSingleton(sp => new ActivitySource("UserRegisteredActivitySource"));
-            }
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                // Act
-                using var response = await client.GetAsync("/api/values").ConfigureAwait(false);
-
-                // Assert
-                response.EnsureSuccessStatusCode(); // Status Code 200-299
-
-                WaitForActivityExport(exportedItems, 1);
-            }
-
-            Assert.Single(exportedItems);
-            var activity = exportedItems[0];
-
-            Assert.Equal("UserRegisteredActivitySource", activity.Source.Name);
+                new TraceContextPropagator(),
+                new BaggagePropagator(),
+            }));
         }
-#endif
+    }
 
-        [Theory]
-        [InlineData(1)]
-        [InlineData(2)]
-        public async Task ShouldExportActivityWithOneOrMoreExceptionFilters(int mode)
+    [Fact]
+    public async Task BaggageIsNotClearedWhenActivityStopped()
+    {
+        int? baggageCountAfterStart = null;
+        int? baggageCountAfterStop = null;
+        using EventWaitHandle stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset);
+
+        void ConfigureTestServices(IServiceCollection services)
         {
-            var exportedItems = new List<Activity>();
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(
-                    (s) => this.ConfigureExceptionFilters(s, mode, ref exportedItems));
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                // Act
-                using var response = await client.GetAsync("/api/error").ConfigureAwait(false);
-
-                WaitForActivityExport(exportedItems, 1);
-            }
-
-            // Assert
-            AssertException(exportedItems);
-        }
-
-        [Fact]
-        public async Task DiagnosticSourceCallbacksAreReceivedOnlyForSubscribedEvents()
-        {
-            int numberOfUnSubscribedEvents = 0;
-            int numberofSubscribedEvents = 0;
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation(
-                        new TestHttpInListener(new AspNetCoreInstrumentationOptions())
-                        {
-                            OnEventWrittenCallback = (name, payload) =>
-                            {
-                                switch (name)
-                                {
-                                    case HttpInListener.OnStartEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                        }
-
-                                        break;
-                                    case HttpInListener.OnStopEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                        }
-
-                                        break;
-                                    case HttpInListener.OnMvcBeforeActionEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                        }
-
-                                        break;
-                                    default:
-                                        {
-                                            numberOfUnSubscribedEvents++;
-                                        }
-
-                                        break;
-                                }
-                            },
-                        })
-                    .Build();
-            }
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/values");
-
-                // Act
-                using var response = await client.SendAsync(request).ConfigureAwait(false);
-            }
-
-            Assert.Equal(0, numberOfUnSubscribedEvents);
-            Assert.Equal(3, numberofSubscribedEvents);
-        }
-
-        [Fact]
-        public async Task DiagnosticSourceExceptionCallbackIsReceivedForUnHandledException()
-        {
-            int numberOfUnSubscribedEvents = 0;
-            int numberofSubscribedEvents = 0;
-            int numberOfExceptionCallbacks = 0;
-            void ConfigureTestServices(IServiceCollection services)
-            {
-                this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                    .AddAspNetCoreInstrumentation(
-                        new TestHttpInListener(new AspNetCoreInstrumentationOptions())
-                        {
-                            OnEventWrittenCallback = (name, payload) =>
-                            {
-                                switch (name)
-                                {
-                                    case HttpInListener.OnStartEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                        }
-
-                                        break;
-                                    case HttpInListener.OnStopEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                        }
-
-                                        break;
-                                    case HttpInListener.OnMvcBeforeActionEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                        }
-
-                                        break;
-
-                                    // TODO: Add test case for validating name for both the types
-                                    // of exception event.
-                                    case HttpInListener.OnUnhandledHostingExceptionEvent:
-                                    case HttpInListener.OnUnHandledDiagnosticsExceptionEvent:
-                                        {
-                                            numberofSubscribedEvents++;
-                                            numberOfExceptionCallbacks++;
-                                        }
-
-                                        break;
-                                    default:
-                                        {
-                                            numberOfUnSubscribedEvents++;
-                                        }
-
-                                        break;
-                                }
-                            },
-                        })
-                    .Build();
-            }
-
-            // Arrange
-            using (var client = this.factory
-                .WithWebHostBuilder(builder =>
-                {
-                    builder.ConfigureTestServices(ConfigureTestServices);
-                    builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
-                })
-                .CreateClient())
-            {
-                try
-                {
-                    using var request = new HttpRequestMessage(HttpMethod.Get, "/api/error");
-
-                    // Act
-                    using var response = await client.SendAsync(request).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // ignore exception
-                }
-            }
-
-            Assert.Equal(1, numberOfExceptionCallbacks);
-            Assert.Equal(0, numberOfUnSubscribedEvents);
-            Assert.Equal(4, numberofSubscribedEvents);
-        }
-
-        [Fact]
-        public async Task DiagnosticSourceExceptionCallBackIsNotReceivedForExceptionsHandledInMiddleware()
-        {
-            int numberOfUnSubscribedEvents = 0;
-            int numberofSubscribedEvents = 0;
-            int numberOfExceptionCallbacks = 0;
-
-            // configure SDK
-            using var tracerprovider = Sdk.CreateTracerProviderBuilder()
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
                 .AddAspNetCoreInstrumentation(
-                    new TestHttpInListener(new AspNetCoreInstrumentationOptions())
+                    new TestHttpInListener(new AspNetCoreTraceInstrumentationOptions())
                     {
                         OnEventWrittenCallback = (name, payload) =>
                         {
@@ -917,301 +487,723 @@ namespace OpenTelemetry.Instrumentation.AspNetCore.Tests
                             {
                                 case HttpInListener.OnStartEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        baggageCountAfterStart = Baggage.Current.Count;
                                     }
 
                                     break;
                                 case HttpInListener.OnStopEvent:
                                     {
-                                        numberofSubscribedEvents++;
-                                    }
-
-                                    break;
-
-                                // TODO: Add test case for validating name for both the types
-                                // of exception event.
-                                case HttpInListener.OnUnhandledHostingExceptionEvent:
-                                case HttpInListener.OnUnHandledDiagnosticsExceptionEvent:
-                                    {
-                                        numberofSubscribedEvents++;
-                                        numberOfExceptionCallbacks++;
-                                    }
-
-                                    break;
-                                default:
-                                    {
-                                        numberOfUnSubscribedEvents++;
+                                        baggageCountAfterStop = Baggage.Current.Count;
+                                        stopSignal.Set();
                                     }
 
                                     break;
                             }
                         },
                     })
-                    .Build();
-
-            var builder = WebApplication.CreateBuilder();
-            builder.Logging.ClearProviders();
-            var app = builder.Build();
-
-            app.UseExceptionHandler(handler =>
-            {
-                handler.Run(async (ctx) =>
-                {
-                    await ctx.Response.WriteAsync("handled").ConfigureAwait(false);
-                });
-            });
-
-            app.Map("/error", ThrowException);
-
-            static void ThrowException(IApplicationBuilder app)
-            {
-                app.Run(context =>
-                {
-                    throw new Exception("CustomException");
-                });
-            }
-
-            _ = app.RunAsync();
-
-            using var client = new HttpClient();
-            try
-            {
-                await client.GetStringAsync("http://localhost:5000/error").ConfigureAwait(false);
-            }
-            catch
-            {
-                // ignore 500 error.
-            }
-
-            Assert.Equal(0, numberOfExceptionCallbacks);
-            Assert.Equal(0, numberOfUnSubscribedEvents);
-            Assert.Equal(2, numberofSubscribedEvents);
-
-            await app.DisposeAsync().ConfigureAwait(false);
+                .Build();
         }
 
-        [Fact]
-        public async Task RouteInformationIsNotAddedToRequestsOutsideOfMVC()
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
         {
-            var exportedItems = new List<Activity>();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/api/values");
 
-            // configure SDK
-            using var tracerprovider = Sdk.CreateTracerProviderBuilder()
+            request.Headers.TryAddWithoutValidation("baggage", "TestKey1=123,TestKey2=456");
+
+            // Act
+            using var response = await client.SendAsync(request);
+        }
+
+        stopSignal.WaitOne(5000);
+
+        // Assert
+        Assert.NotNull(baggageCountAfterStart);
+        Assert.Equal(2, baggageCountAfterStart);
+        Assert.NotNull(baggageCountAfterStop);
+        Assert.Equal(2, baggageCountAfterStop);
+    }
+
+    [Theory]
+    [InlineData(SamplingDecision.Drop, false, false)]
+    [InlineData(SamplingDecision.RecordOnly, true, true)]
+    [InlineData(SamplingDecision.RecordAndSample, true, true)]
+    public async Task FilterAndEnrichAreOnlyCalledWhenSampled(SamplingDecision samplingDecision, bool shouldFilterBeCalled, bool shouldEnrichBeCalled)
+    {
+        bool filterCalled = false;
+        bool enrichWithHttpRequestCalled = false;
+        bool enrichWithHttpResponseCalled = false;
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .SetSampler(new TestSampler(samplingDecision))
+                .AddAspNetCoreInstrumentation(options =>
+                {
+                    options.Filter = (context) =>
+                    {
+                        filterCalled = true;
+                        return true;
+                    };
+                    options.EnrichWithHttpRequest = (activity, request) =>
+                    {
+                        enrichWithHttpRequestCalled = true;
+                    };
+                    options.EnrichWithHttpResponse = (activity, request) =>
+                    {
+                        enrichWithHttpResponseCalled = true;
+                    };
+                })
+                .Build();
+        }
+
+        // Arrange
+        using var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient();
+
+        // Act
+        using var response = await client.GetAsync("/api/values");
+
+        // Assert
+        Assert.Equal(shouldFilterBeCalled, filterCalled);
+        Assert.Equal(shouldEnrichBeCalled, enrichWithHttpRequestCalled);
+        Assert.Equal(shouldEnrichBeCalled, enrichWithHttpResponseCalled);
+    }
+
+    [Fact]
+    public async Task ActivitiesStartedInMiddlewareShouldNotBeUpdated()
+    {
+        var exportedItems = new List<Activity>();
+
+        var activitySourceName = "TestMiddlewareActivitySource";
+        var activityName = "TestMiddlewareActivity";
+
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            services.AddSingleton<ActivityMiddleware.ActivityMiddlewareImpl>(new TestActivityMiddlewareImpl(activitySourceName, activityName));
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation()
+                .AddSource(activitySourceName)
+                .AddInMemoryExporter(exportedItems)
+                .Build();
+        }
+
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            using var response = await client.GetAsync("/api/values/2");
+            response.EnsureSuccessStatusCode();
+            WaitForActivityExport(exportedItems, 2);
+        }
+
+        Assert.Equal(2, exportedItems.Count);
+
+        var middlewareActivity = exportedItems[0];
+
+        var aspnetcoreframeworkactivity = exportedItems[1];
+
+        // Middleware activity name should not be changed
+        Assert.Equal(ActivityKind.Internal, middlewareActivity.Kind);
+        Assert.Equal(activityName, middlewareActivity.OperationName);
+        Assert.Equal(activityName, middlewareActivity.DisplayName);
+
+        // tag http.method should be added on activity started by asp.net core
+        Assert.Equal("GET", aspnetcoreframeworkactivity.GetTagValue(SemanticConventions.AttributeHttpRequestMethod) as string);
+        Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", aspnetcoreframeworkactivity.OperationName);
+    }
+
+    [Theory]
+    [InlineData("CONNECT", "CONNECT")]
+    [InlineData("DELETE", "DELETE")]
+    [InlineData("GET", "GET")]
+    [InlineData("PUT", "PUT")]
+    [InlineData("HEAD", "HEAD")]
+    [InlineData("OPTIONS", "OPTIONS")]
+    [InlineData("PATCH", "PATCH")]
+    [InlineData("Get", "GET")]
+    [InlineData("POST", "POST")]
+    [InlineData("TRACE", "TRACE")]
+    [InlineData("CUSTOM", "_OTHER")]
+    public async Task HttpRequestMethodIsSetAsPerSpec(string originalMethod, string expectedMethod)
+    {
+        var exportedItems = new List<Activity>();
+
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
                 .AddAspNetCoreInstrumentation()
                 .AddInMemoryExporter(exportedItems)
                 .Build();
+        }
 
-            var builder = WebApplication.CreateBuilder();
-            builder.Logging.ClearProviders();
-            var app = builder.Build();
-
-            app.MapGet("/custom/{name:alpha}", () => "Hello");
-
-            _ = app.RunAsync();
-
-            using var client = new HttpClient();
-            var res = await client.GetStringAsync("http://localhost:5000/custom/abc").ConfigureAwait(false);
-            Assert.NotNull(res);
-
-            tracerprovider.ForceFlush();
-            for (var i = 0; i < 10; i++)
+        // Arrange
+        using var client = this.factory
+            .WithWebHostBuilder(builder =>
             {
-                if (exportedItems.Count > 0)
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient();
+
+        var message = new HttpRequestMessage();
+
+        message.Method = new HttpMethod(originalMethod);
+
+        try
+        {
+            using var response = await client.SendAsync(message);
+            response.EnsureSuccessStatusCode();
+        }
+        catch
+        {
+            // ignore error.
+        }
+
+        WaitForActivityExport(exportedItems, 1);
+
+        Assert.Single(exportedItems);
+
+        var activity = exportedItems[0];
+
+        Assert.Contains(activity.TagObjects, t => t.Key == SemanticConventions.AttributeHttpRequestMethod);
+
+        if (originalMethod.Equals(expectedMethod, StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.DoesNotContain(activity.TagObjects, t => t.Key == SemanticConventions.AttributeHttpRequestMethodOriginal);
+        }
+        else
+        {
+            Assert.Equal(originalMethod, activity.GetTagValue(SemanticConventions.AttributeHttpRequestMethodOriginal) as string);
+        }
+
+        Assert.Equal(expectedMethod, activity.GetTagValue(SemanticConventions.AttributeHttpRequestMethod) as string);
+    }
+
+    [Fact]
+    public async Task ActivitiesStartedInMiddlewareBySettingHostActivityToNullShouldNotBeUpdated()
+    {
+        var exportedItems = new List<Activity>();
+
+        var activitySourceName = "TestMiddlewareActivitySource";
+        var activityName = "TestMiddlewareActivity";
+
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices((IServiceCollection services) =>
                 {
-                    break;
-                }
-
-                // We need to let End callback execute as it is executed AFTER response was returned.
-                // In unit tests environment there may be a lot of parallel unit tests executed, so
-                // giving some breezing room for the End callback to complete
-                await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            }
-
-            var activity = exportedItems[0];
-
-            Assert.NotNull(activity);
-
-            // After fix update to Contains http.route
-            Assert.DoesNotContain(activity.TagObjects, t => t.Key == SemanticConventions.AttributeHttpRoute);
-            Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", activity.OperationName);
-
-            // After fix this should be /custom/{name:alpha}
-            Assert.Equal("/custom/abc", activity.DisplayName);
-
-            await app.DisposeAsync().ConfigureAwait(false);
+                    services.AddSingleton<ActivityMiddleware.ActivityMiddlewareImpl>(new TestNullHostActivityMiddlewareImpl(activitySourceName, activityName));
+                    services.AddOpenTelemetry()
+                        .WithTracing(builder => builder
+                            .AddAspNetCoreInstrumentation()
+                            .AddSource(activitySourceName)
+                            .AddInMemoryExporter(exportedItems));
+                });
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            using var response = await client.GetAsync("/api/values/2");
+            response.EnsureSuccessStatusCode();
+            WaitForActivityExport(exportedItems, 2);
         }
 
-        public void Dispose()
-        {
-            this.tracerProvider?.Dispose();
-        }
+        Assert.Equal(2, exportedItems.Count);
 
-        private static void WaitForActivityExport(List<Activity> exportedItems, int count)
-        {
-            // We need to let End callback execute as it is executed AFTER response was returned.
-            // In unit tests environment there may be a lot of parallel unit tests executed, so
-            // giving some breezing room for the End callback to complete
-            Assert.True(SpinWait.SpinUntil(
-                () =>
-                {
-                    Thread.Sleep(10);
-                    return exportedItems.Count >= count;
-                },
-                TimeSpan.FromSeconds(1)));
-        }
+        var middlewareActivity = exportedItems[0];
 
-        private static void ValidateAspNetCoreActivity(Activity activityToValidate, string expectedHttpPath)
-        {
-            Assert.Equal(ActivityKind.Server, activityToValidate.Kind);
+        var aspnetcoreframeworkactivity = exportedItems[1];
+
+        // Middleware activity name should not be changed
+        Assert.Equal(ActivityKind.Internal, middlewareActivity.Kind);
+        Assert.Equal(activityName, middlewareActivity.OperationName);
+        Assert.Equal(activityName, middlewareActivity.DisplayName);
+
+        // tag http.method should be added on activity started by asp.net core
+        Assert.Equal("GET", aspnetcoreframeworkactivity.GetTagValue(SemanticConventions.AttributeHttpRequestMethod) as string);
+        Assert.Equal("Microsoft.AspNetCore.Hosting.HttpRequestIn", aspnetcoreframeworkactivity.OperationName);
+    }
+
 #if NET7_0_OR_GREATER
-            Assert.Equal(HttpInListener.AspNetCoreActivitySourceName, activityToValidate.Source.Name);
-            Assert.Empty(activityToValidate.Source.Version);
-#else
-            Assert.Equal(HttpInListener.ActivitySourceName, activityToValidate.Source.Name);
-            Assert.Equal(HttpInListener.Version.ToString(), activityToValidate.Source.Version);
+    [Fact]
+    public async Task UserRegisteredActivitySourceIsUsedForActivityCreationByAspNetCore()
+    {
+        var exportedItems = new List<Activity>();
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            services.AddOpenTelemetry()
+                .WithTracing(builder => builder
+                    .AddAspNetCoreInstrumentation()
+                    .AddInMemoryExporter(exportedItems));
+
+            // Register ActivitySource here so that it will be used
+            // by ASP.NET Core to create activities
+            // https://github.com/dotnet/aspnetcore/blob/0e5cbf447d329a1e7d69932c3decd1c70a00fbba/src/Hosting/Hosting/src/Internal/WebHost.cs#L152
+            services.AddSingleton(sp => new ActivitySource("UserRegisteredActivitySource"));
+        }
+
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            // Act
+            using var response = await client.GetAsync("/api/values");
+
+            // Assert
+            response.EnsureSuccessStatusCode(); // Status Code 200-299
+
+            WaitForActivityExport(exportedItems, 1);
+        }
+
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+
+        Assert.Equal("UserRegisteredActivitySource", activity.Source.Name);
+    }
 #endif
-            Assert.Equal(expectedHttpPath, activityToValidate.GetTagValue(SemanticConventions.AttributeHttpTarget) as string);
-        }
 
-        private static void AssertException(List<Activity> exportedItems)
-        {
-            Assert.Single(exportedItems);
-            var activity = exportedItems[0];
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task ShouldExportActivityWithOneOrMoreExceptionFilters(int mode)
+    {
+        var exportedItems = new List<Activity>();
 
-            var exMessage = "something's wrong!";
-            Assert.Single(activity.Events);
-            Assert.Equal("System.Exception", activity.Events.First().Tags.FirstOrDefault(t => t.Key == SemanticConventions.AttributeExceptionType).Value);
-            Assert.Equal(exMessage, activity.Events.First().Tags.FirstOrDefault(t => t.Key == SemanticConventions.AttributeExceptionMessage).Value);
-
-            ValidateAspNetCoreActivity(activity, "/api/error");
-        }
-
-        private void ConfigureExceptionFilters(IServiceCollection services, int mode, ref List<Activity> exportedItems)
-        {
-            switch (mode)
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
             {
-                case 1:
-                    services.AddMvc(x => x.Filters.Add<ExceptionFilter1>());
-                    break;
-                case 2:
-                    services.AddMvc(x => x.Filters.Add<ExceptionFilter1>());
-                    services.AddMvc(x => x.Filters.Add<ExceptionFilter2>());
-                    break;
-                default:
-                    break;
-            }
+                builder.ConfigureTestServices(
+                (s) => this.ConfigureExceptionFilters(s, mode, ref exportedItems));
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            // Act
+            using var response = await client.GetAsync("/api/error");
 
-            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
-                .AddAspNetCoreInstrumentation(x => x.RecordException = true)
-                .AddInMemoryExporter(exportedItems)
+            WaitForActivityExport(exportedItems, 1);
+        }
+
+        // Assert
+        AssertException(exportedItems);
+    }
+
+    [Fact]
+    public async Task DiagnosticSourceCallbacksAreReceivedOnlyForSubscribedEvents()
+    {
+        int numberOfUnSubscribedEvents = 0;
+        int numberofSubscribedEvents = 0;
+
+        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+            .AddAspNetCoreInstrumentation(
+                new TestHttpInListener(new AspNetCoreTraceInstrumentationOptions())
+                {
+                    OnEventWrittenCallback = (name, payload) =>
+                    {
+                        switch (name)
+                        {
+                            case HttpInListener.OnStartEvent:
+                                {
+                                    numberofSubscribedEvents++;
+                                }
+
+                                break;
+                            case HttpInListener.OnStopEvent:
+                                {
+                                    numberofSubscribedEvents++;
+                                }
+
+                                break;
+                            default:
+                                {
+                                    numberOfUnSubscribedEvents++;
+                                }
+
+                                break;
+                        }
+                    },
+                })
+            .Build();
+
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/api/values");
+
+            // Act
+            using var response = await client.SendAsync(request);
+        }
+
+        Assert.Equal(0, numberOfUnSubscribedEvents);
+        Assert.Equal(2, numberofSubscribedEvents);
+    }
+
+    [Fact]
+    public async Task DiagnosticSourceExceptionCallbackIsReceivedForUnHandledException()
+    {
+        int numberOfUnSubscribedEvents = 0;
+        int numberofSubscribedEvents = 0;
+        int numberOfExceptionCallbacks = 0;
+
+        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+            .AddAspNetCoreInstrumentation(
+                new TestHttpInListener(new AspNetCoreTraceInstrumentationOptions())
+                {
+                    OnEventWrittenCallback = (name, payload) =>
+                    {
+                        switch (name)
+                        {
+                            case HttpInListener.OnStartEvent:
+                                {
+                                    numberofSubscribedEvents++;
+                                }
+
+                                break;
+                            case HttpInListener.OnStopEvent:
+                                {
+                                    numberofSubscribedEvents++;
+                                }
+
+                                break;
+
+                            // TODO: Add test case for validating name for both the types
+                            // of exception event.
+                            case HttpInListener.OnUnhandledHostingExceptionEvent:
+                            case HttpInListener.OnUnHandledDiagnosticsExceptionEvent:
+                                {
+                                    numberofSubscribedEvents++;
+                                    numberOfExceptionCallbacks++;
+                                }
+
+                                break;
+                            default:
+                                {
+                                    numberOfUnSubscribedEvents++;
+                                }
+
+                                break;
+                        }
+                    },
+                })
+            .Build();
+
+        // Arrange
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/error");
+
+                // Act
+                using var response = await client.SendAsync(request);
+            }
+            catch
+            {
+                // ignore exception
+            }
+        }
+
+        Assert.Equal(1, numberOfExceptionCallbacks);
+        Assert.Equal(0, numberOfUnSubscribedEvents);
+        Assert.Equal(3, numberofSubscribedEvents);
+    }
+
+    [Fact]
+    public async Task DiagnosticSourceExceptionCallBackIsNotReceivedForExceptionsHandledInMiddleware()
+    {
+        int numberOfUnSubscribedEvents = 0;
+        int numberOfSubscribedEvents = 0;
+        int numberOfExceptionCallbacks = 0;
+        bool exceptionHandled = false;
+
+        // configure SDK
+        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+            .AddAspNetCoreInstrumentation(
+                new TestHttpInListener(new AspNetCoreTraceInstrumentationOptions())
+                {
+                    OnEventWrittenCallback = (name, payload) =>
+                    {
+                        switch (name)
+                        {
+                            case HttpInListener.OnStartEvent:
+                                {
+                                    numberOfSubscribedEvents++;
+                                }
+
+                                break;
+                            case HttpInListener.OnStopEvent:
+                                {
+                                    numberOfSubscribedEvents++;
+                                }
+
+                                break;
+
+                            // TODO: Add test case for validating name for both the types
+                            // of exception event.
+                            case HttpInListener.OnUnhandledHostingExceptionEvent:
+                            case HttpInListener.OnUnHandledDiagnosticsExceptionEvent:
+                                {
+                                    numberOfSubscribedEvents++;
+                                    numberOfExceptionCallbacks++;
+                                }
+
+                                break;
+                            default:
+                                {
+                                    numberOfUnSubscribedEvents++;
+                                }
+
+                                break;
+                        }
+                    },
+                })
                 .Build();
-        }
 
-        private class ExtractOnlyPropagator : TextMapPropagator
+        TestMiddleware.Create(builder => builder
+            .UseExceptionHandler(handler =>
+                handler.Run(async (ctx) =>
+                {
+                    exceptionHandled = true;
+                    await ctx.Response.WriteAsync("handled");
+                })));
+
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            })
+            .CreateClient())
         {
-            private readonly ActivityContext activityContext;
-            private readonly Baggage baggage;
-
-            public ExtractOnlyPropagator(ActivityContext activityContext, Baggage baggage)
+            try
             {
-                this.activityContext = activityContext;
-                this.baggage = baggage;
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/error");
+                using var response = await client.SendAsync(request);
             }
-
-            public override ISet<string> Fields => throw new NotImplementedException();
-
-            public override PropagationContext Extract<T>(PropagationContext context, T carrier, Func<T, string, IEnumerable<string>> getter)
+            catch
             {
-                return new PropagationContext(this.activityContext, this.baggage);
-            }
-
-            public override void Inject<T>(PropagationContext context, T carrier, Action<T, string, string> setter)
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-        private class TestSampler : Sampler
-        {
-            private readonly SamplingDecision samplingDecision;
-
-            public TestSampler(SamplingDecision samplingDecision)
-            {
-                this.samplingDecision = samplingDecision;
-            }
-
-            public override SamplingResult ShouldSample(in SamplingParameters samplingParameters)
-            {
-                return new SamplingResult(this.samplingDecision);
+                // ignore exception
             }
         }
 
-        private class TestHttpInListener : HttpInListener
+        Assert.Equal(0, numberOfExceptionCallbacks);
+        Assert.Equal(0, numberOfUnSubscribedEvents);
+        Assert.Equal(2, numberOfSubscribedEvents);
+        Assert.True(exceptionHandled);
+    }
+
+#if NET6_0_OR_GREATER
+    [Fact]
+    public async Task NoSiblingActivityCreatedWhenTraceFlagsNone()
+    {
+        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+            .SetSampler(new AlwaysOnSampler())
+            .AddAspNetCoreInstrumentation()
+            .Build();
+
+        using var testFactory = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(services =>
+                {
+                    this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                    .AddAspNetCoreInstrumentation()
+                    .Build();
+                });
+
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+            });
+        using var client = testFactory.CreateClient();
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/GetActivityEquality");
+        var traceId = ActivityTraceId.CreateRandom();
+        var spanId = ActivitySpanId.CreateRandom();
+        request.Headers.Add("traceparent", $"00-{traceId}-{spanId}-00");
+
+        var response = await client.SendAsync(request);
+        var result = bool.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.True(response.IsSuccessStatusCode);
+
+        // Confirm that Activity.Current and IHttpActivityFeature activity are same
+        Assert.True(result);
+    }
+#endif
+
+    public void Dispose()
+    {
+        this.tracerProvider?.Dispose();
+    }
+
+    private static void WaitForActivityExport(List<Activity> exportedItems, int count)
+    {
+        // We need to let End callback execute as it is executed AFTER response was returned.
+        // In unit tests environment there may be a lot of parallel unit tests executed, so
+        // giving some breezing room for the End callback to complete
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                Thread.Sleep(10);
+                return exportedItems.Count >= count;
+            },
+            TimeSpan.FromSeconds(1)));
+    }
+
+    private static void ValidateAspNetCoreActivity(Activity activityToValidate, string expectedHttpPath)
+    {
+        Assert.Equal(ActivityKind.Server, activityToValidate.Kind);
+#if NET7_0_OR_GREATER
+        Assert.Equal(HttpInListener.AspNetCoreActivitySourceName, activityToValidate.Source.Name);
+        Assert.Empty(activityToValidate.Source.Version);
+#else
+        Assert.Equal(HttpInListener.ActivitySourceName, activityToValidate.Source.Name);
+        Assert.Equal(HttpInListener.Version.ToString(), activityToValidate.Source.Version);
+#endif
+        Assert.Equal(expectedHttpPath, activityToValidate.GetTagValue(SemanticConventions.AttributeUrlPath) as string);
+    }
+
+    private static void AssertException(List<Activity> exportedItems)
+    {
+        Assert.Single(exportedItems);
+        var activity = exportedItems[0];
+
+        var exMessage = "something's wrong!";
+        Assert.Single(activity.Events);
+        Assert.Equal("System.Exception", activity.Events.First().Tags.FirstOrDefault(t => t.Key == SemanticConventions.AttributeExceptionType).Value);
+        Assert.Equal(exMessage, activity.Events.First().Tags.FirstOrDefault(t => t.Key == SemanticConventions.AttributeExceptionMessage).Value);
+
+        ValidateAspNetCoreActivity(activity, "/api/error");
+    }
+
+    private void ConfigureExceptionFilters(IServiceCollection services, int mode, ref List<Activity> exportedItems)
+    {
+        switch (mode)
         {
-            public Action<string, object> OnEventWrittenCallback;
-
-            public TestHttpInListener(AspNetCoreInstrumentationOptions options)
-                : base(options)
-            {
-            }
-
-            public override void OnEventWritten(string name, object payload)
-            {
-                base.OnEventWritten(name, payload);
-
-                this.OnEventWrittenCallback?.Invoke(name, payload);
-            }
+            case 1:
+                services.AddMvc(x => x.Filters.Add<ExceptionFilter1>());
+                break;
+            case 2:
+                services.AddMvc(x => x.Filters.Add<ExceptionFilter1>());
+                services.AddMvc(x => x.Filters.Add<ExceptionFilter2>());
+                break;
+            default:
+                break;
         }
 
-        private class TestNullHostActivityMiddlewareImpl : ActivityMiddleware.ActivityMiddlewareImpl
+        this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+            .AddAspNetCoreInstrumentation(x => x.RecordException = true)
+            .AddInMemoryExporter(exportedItems)
+            .Build();
+    }
+
+    private class ExtractOnlyPropagator(ActivityContext activityContext, Baggage baggage) : TextMapPropagator
+    {
+        private readonly ActivityContext activityContext = activityContext;
+        private readonly Baggage baggage = baggage;
+
+        public override ISet<string> Fields => throw new NotImplementedException();
+
+        public override PropagationContext Extract<T>(PropagationContext context, T carrier, Func<T, string, IEnumerable<string>> getter)
         {
-            private ActivitySource activitySource;
-            private Activity activity;
-            private string activityName;
-
-            public TestNullHostActivityMiddlewareImpl(string activitySourceName, string activityName)
-            {
-                this.activitySource = new ActivitySource(activitySourceName);
-                this.activityName = activityName;
-            }
-
-            public override void PreProcess(HttpContext context)
-            {
-                // Setting the host activity i.e. activity started by asp.net core
-                // to null here will have no impact on middleware activity.
-                // This also means that asp.net core activity will not be found
-                // during OnEventWritten event.
-                Activity.Current = null;
-                this.activity = this.activitySource.StartActivity(this.activityName);
-            }
-
-            public override void PostProcess(HttpContext context)
-            {
-                this.activity?.Stop();
-            }
+            return new PropagationContext(this.activityContext, this.baggage);
         }
 
-        private class TestActivityMiddlewareImpl : ActivityMiddleware.ActivityMiddlewareImpl
+        public override void Inject<T>(PropagationContext context, T carrier, Action<T, string, string> setter)
         {
-            private ActivitySource activitySource;
-            private Activity activity;
-            private string activityName;
+            throw new NotImplementedException();
+        }
+    }
 
-            public TestActivityMiddlewareImpl(string activitySourceName, string activityName)
-            {
-                this.activitySource = new ActivitySource(activitySourceName);
-                this.activityName = activityName;
-            }
+    private class TestSampler(SamplingDecision samplingDecision, IEnumerable<KeyValuePair<string, object>> attributes = null) : Sampler
+    {
+        private readonly SamplingDecision samplingDecision = samplingDecision;
+        private readonly IEnumerable<KeyValuePair<string, object>> attributes = attributes;
 
-            public override void PreProcess(HttpContext context)
-            {
-                this.activity = this.activitySource.StartActivity(this.activityName);
-            }
+        public override SamplingResult ShouldSample(in SamplingParameters samplingParameters)
+        {
+            return new SamplingResult(this.samplingDecision, this.attributes);
+        }
+    }
 
-            public override void PostProcess(HttpContext context)
-            {
-                this.activity?.Stop();
-            }
+    private class TestHttpInListener(AspNetCoreTraceInstrumentationOptions options) : HttpInListener(options)
+    {
+        public Action<string, object> OnEventWrittenCallback;
+
+        public override void OnEventWritten(string name, object payload)
+        {
+            base.OnEventWritten(name, payload);
+
+            this.OnEventWrittenCallback?.Invoke(name, payload);
+        }
+    }
+
+    private class TestNullHostActivityMiddlewareImpl(string activitySourceName, string activityName) : ActivityMiddleware.ActivityMiddlewareImpl
+    {
+        private readonly ActivitySource activitySource = new(activitySourceName);
+        private readonly string activityName = activityName;
+        private Activity activity;
+
+        public override void PreProcess(HttpContext context)
+        {
+            // Setting the host activity i.e. activity started by asp.net core
+            // to null here will have no impact on middleware activity.
+            // This also means that asp.net core activity will not be found
+            // during OnEventWritten event.
+            Activity.Current = null;
+            this.activity = this.activitySource.StartActivity(this.activityName);
+        }
+
+        public override void PostProcess(HttpContext context)
+        {
+            this.activity?.Stop();
+        }
+    }
+
+    private class TestActivityMiddlewareImpl(string activitySourceName, string activityName) : ActivityMiddleware.ActivityMiddlewareImpl
+    {
+        private readonly ActivitySource activitySource = new(activitySourceName);
+        private readonly string activityName = activityName;
+        private Activity activity;
+
+        public override void PreProcess(HttpContext context)
+        {
+            this.activity = this.activitySource.StartActivity(this.activityName);
+        }
+
+        public override void PostProcess(HttpContext context)
+        {
+            this.activity?.Stop();
         }
     }
 }

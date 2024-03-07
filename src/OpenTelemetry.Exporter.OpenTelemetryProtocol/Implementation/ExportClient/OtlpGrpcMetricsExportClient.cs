@@ -1,60 +1,47 @@
-// <copyright file="OtlpGrpcMetricsExportClient.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using Grpc.Core;
 using OtlpCollector = OpenTelemetry.Proto.Collector.Metrics.V1;
 
-namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation.ExportClient
+namespace OpenTelemetry.Exporter.OpenTelemetryProtocol.Implementation.ExportClient;
+
+/// <summary>Class for sending OTLP metrics export request over gRPC.</summary>
+internal sealed class OtlpGrpcMetricsExportClient : BaseOtlpGrpcExportClient<OtlpCollector.ExportMetricsServiceRequest>
 {
-    /// <summary>Class for sending OTLP metrics export request over gRPC.</summary>
-    internal sealed class OtlpGrpcMetricsExportClient : BaseOtlpGrpcExportClient<OtlpCollector.ExportMetricsServiceRequest>
+    private readonly OtlpCollector.MetricsService.MetricsServiceClient metricsClient;
+
+    public OtlpGrpcMetricsExportClient(OtlpExporterOptions options, OtlpCollector.MetricsService.MetricsServiceClient metricsServiceClient = null)
+        : base(options)
     {
-        private readonly OtlpCollector.MetricsService.MetricsServiceClient metricsClient;
-
-        public OtlpGrpcMetricsExportClient(OtlpExporterOptions options, OtlpCollector.MetricsService.MetricsServiceClient metricsServiceClient = null)
-            : base(options)
+        if (metricsServiceClient != null)
         {
-            if (metricsServiceClient != null)
-            {
-                this.metricsClient = metricsServiceClient;
-            }
-            else
-            {
-                this.Channel = options.CreateChannel();
-                this.metricsClient = new OtlpCollector.MetricsService.MetricsServiceClient(this.Channel);
-            }
+            this.metricsClient = metricsServiceClient;
         }
-
-        /// <inheritdoc/>
-        public override bool SendExportRequest(OtlpCollector.ExportMetricsServiceRequest request, CancellationToken cancellationToken = default)
+        else
         {
-            var deadline = DateTime.UtcNow.AddMilliseconds(this.TimeoutMilliseconds);
+            this.Channel = options.CreateChannel();
+            this.metricsClient = new OtlpCollector.MetricsService.MetricsServiceClient(this.Channel);
+        }
+    }
 
-            try
-            {
-                this.metricsClient.Export(request, headers: this.Headers, deadline: deadline, cancellationToken: cancellationToken);
-            }
-            catch (RpcException ex)
-            {
-                OpenTelemetryProtocolExporterEventSource.Log.FailedToReachCollector(this.Endpoint, ex);
+    /// <inheritdoc/>
+    public override ExportClientResponse SendExportRequest(OtlpCollector.ExportMetricsServiceRequest request, CancellationToken cancellationToken = default)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(this.TimeoutMilliseconds);
 
-                return false;
-            }
+        try
+        {
+            this.metricsClient.Export(request, headers: this.Headers, deadline: deadline, cancellationToken: cancellationToken);
 
-            return true;
+            // We do not need to return back response and deadline for successful response so using cached value.
+            return SuccessExportResponse;
+        }
+        catch (RpcException ex)
+        {
+            OpenTelemetryProtocolExporterEventSource.Log.FailedToReachCollector(this.Endpoint, ex);
+
+            return new ExportClientGrpcResponse(success: false, deadlineUtc: deadline, exception: ex);
         }
     }
 }

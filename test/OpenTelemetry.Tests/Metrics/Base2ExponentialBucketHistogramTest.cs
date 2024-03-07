@@ -1,26 +1,21 @@
-// <copyright file="Base2ExponentialBucketHistogramTest.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using OpenTelemetry.Tests;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace OpenTelemetry.Metrics.Tests;
 
-public partial class Base2ExponentialBucketHistogramTest
+public class Base2ExponentialBucketHistogramTest
 {
+    private readonly ITestOutputHelper output;
+
+    public Base2ExponentialBucketHistogramTest(ITestOutputHelper output)
+    {
+        this.output = output;
+    }
+
     [Fact]
     public void ScalingFactorCalculation()
     {
@@ -537,7 +532,7 @@ public partial class Base2ExponentialBucketHistogramTest
             // Knowing that MapToIndex is imprecise near bucket boundaries,
             // the following produces an analysis of the magnitude of imprecision.
 
-            var incremented = BitIncrement(lowerBound);
+            var incremented = MathHelper.BitIncrement(lowerBound);
 
             if (index == histogram.MapToIndex(incremented))
             {
@@ -554,7 +549,7 @@ public partial class Base2ExponentialBucketHistogramTest
                 var increments = 1;
                 while (index != histogram.MapToIndex(incremented))
                 {
-                    incremented = BitIncrement(incremented);
+                    incremented = MathHelper.BitIncrement(incremented);
                     increments++;
                 }
 

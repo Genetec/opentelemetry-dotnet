@@ -84,7 +84,16 @@ Only for Maintainers.
     git push origin 1.0.0-rc9.7
     ```
 
-    If releasing both, push both tags above.
+    If releasing only a particular non-core component which has a dedicated
+    MinverTagPrefix such as AspNetCore instrumentation, only add and push the
+    tag with that particular prefix. For example:
+
+    ```sh
+    git tag -a Instrumentation.AspNetCore-1.6.0 -m "1.6.0 of AspNetCore instrumentation library"
+    git push origin Instrumentation.AspNetCore-1.6.0
+    ```
+
+    If releasing multiple kinds of components, push both tags for each of them.
 
  7. Go to the [list of
     tags](https://github.com/open-telemetry/opentelemetry-dotnet/tags)
@@ -128,4 +137,5 @@ Only for Maintainers.
     by sending a Pull Request.
 
 17. If a new stable version of the core packages were released, update
-    `OTelPreviousStableVer` in Common.props to the just released stable version.
+    `OTelLatestStableVer` in Directory.Packages.props to the just released
+    stable version.

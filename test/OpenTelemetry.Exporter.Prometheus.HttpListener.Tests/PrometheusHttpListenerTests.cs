@@ -1,144 +1,255 @@
-// <copyright file="PrometheusHttpListenerTests.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics.Metrics;
 using System.Net;
+#if NETFRAMEWORK
 using System.Net.Http;
+#endif
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Tests;
 using Xunit;
 
-namespace OpenTelemetry.Exporter.Prometheus.Tests
+namespace OpenTelemetry.Exporter.Prometheus.Tests;
+
+public class PrometheusHttpListenerTests
 {
-    public class PrometheusHttpListenerTests
+    private const string MeterVersion = "1.0.1";
+
+    private static readonly string MeterName = Utils.GetCurrentMethodName();
+
+    [Theory]
+    [InlineData("http://+:9464")]
+    [InlineData("http://*:9464")]
+    [InlineData("http://+:9464/")]
+    [InlineData("http://*:9464/")]
+    [InlineData("https://example.com")]
+    [InlineData("http://127.0.0.1")]
+    [InlineData("http://example.com", "https://example.com", "http://127.0.0.1")]
+    [InlineData("http://example.com")]
+    public void UriPrefixesPositiveTest(params string[] uriPrefixes)
     {
-        private readonly string meterName = Utils.GetCurrentMethodName();
+        TestPrometheusHttpListenerUriPrefixOptions(uriPrefixes);
+    }
 
-        [Theory]
-        [InlineData("http://+:9464")]
-        [InlineData("http://*:9464")]
-        [InlineData("http://+:9464/")]
-        [InlineData("http://*:9464/")]
-        [InlineData("https://example.com")]
-        [InlineData("http://127.0.0.1")]
-        [InlineData("http://example.com", "https://example.com", "http://127.0.0.1")]
-        [InlineData("http://example.com")]
-        public void UriPrefixesPositiveTest(params string[] uriPrefixes)
+    [Fact]
+    public void UriPrefixesNull()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
         {
-            using MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder()
-                .AddPrometheusHttpListener(options => options.UriPrefixes = uriPrefixes)
-                .Build();
+            TestPrometheusHttpListenerUriPrefixOptions(null);
+        });
+    }
+
+    [Fact]
+    public void UriPrefixesEmptyList()
+    {
+        Assert.Throws<ArgumentException>(() =>
+        {
+            TestPrometheusHttpListenerUriPrefixOptions(new string[] { });
+        });
+    }
+
+    [Fact]
+    public void UriPrefixesInvalid()
+    {
+        Assert.Throws<ArgumentException>(() =>
+        {
+            TestPrometheusHttpListenerUriPrefixOptions(new string[] { "ftp://example.com" });
+        });
+    }
+
+    [Fact]
+    public async Task PrometheusExporterHttpServerIntegration()
+    {
+        await this.RunPrometheusExporterHttpServerIntegrationTest();
+    }
+
+    [Fact]
+    public async Task PrometheusExporterHttpServerIntegration_NoMetrics()
+    {
+        await this.RunPrometheusExporterHttpServerIntegrationTest(skipMetrics: true);
+    }
+
+    [Fact]
+    public async Task PrometheusExporterHttpServerIntegration_NoOpenMetrics()
+    {
+        await this.RunPrometheusExporterHttpServerIntegrationTest(acceptHeader: string.Empty);
+    }
+
+    [Fact]
+    public async Task PrometheusExporterHttpServerIntegration_UseOpenMetricsVersionHeader()
+    {
+        await this.RunPrometheusExporterHttpServerIntegrationTest(acceptHeader: "application/openmetrics-text; version=1.0.0");
+    }
+
+    [Fact]
+    public void PrometheusHttpListenerThrowsOnStart()
+    {
+        Random random = new Random();
+        int retryAttempts = 5;
+        int port = 0;
+        string address = null;
+
+        PrometheusExporter exporter = null;
+        PrometheusHttpListener listener = null;
+
+        // Step 1: Start a listener on a random port.
+        while (retryAttempts-- != 0)
+        {
+            port = random.Next(2000, 5000);
+            address = $"http://localhost:{port}/";
+
+            try
+            {
+                exporter = new PrometheusExporter(new());
+                listener = new PrometheusHttpListener(
+                    exporter,
+                    new()
+                    {
+                        UriPrefixes = new string[] { address },
+                    });
+
+                listener.Start();
+
+                break;
+            }
+            catch
+            {
+                // ignored
+            }
         }
 
-        [Fact]
-        public void UriPrefixesNull()
+        if (retryAttempts == 0)
         {
-            Assert.Throws<ArgumentNullException>(() =>
+            throw new InvalidOperationException("PrometheusHttpListener could not be started");
+        }
+
+        // Step 2: Make sure if we start a second listener on the same port an exception is thrown.
+        Assert.Throws<HttpListenerException>(() =>
+        {
+            using var exporter = new PrometheusExporter(new());
+            using var listener = new PrometheusHttpListener(
+                exporter,
+                new()
+                {
+                    UriPrefixes = new string[] { address },
+                });
+
+            listener.Start();
+        });
+
+        exporter?.Dispose();
+        listener?.Dispose();
+    }
+
+    private static void TestPrometheusHttpListenerUriPrefixOptions(string[] uriPrefixes)
+    {
+        using var exporter = new PrometheusExporter(new());
+        using var listener = new PrometheusHttpListener(
+            exporter,
+            new()
             {
-                using MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder()
-                    .AddPrometheusHttpListener(options => options.UriPrefixes = null)
-                    .Build();
+                UriPrefixes = uriPrefixes,
             });
-        }
+    }
 
-        [Fact]
-        public void UriPrefixesEmptyList()
+    private async Task RunPrometheusExporterHttpServerIntegrationTest(bool skipMetrics = false, string acceptHeader = "application/openmetrics-text")
+    {
+        var requestOpenMetrics = acceptHeader.StartsWith("application/openmetrics-text");
+
+        Random random = new Random();
+        int retryAttempts = 5;
+        int port = 0;
+        string address = null;
+
+        MeterProvider provider = null;
+        using var meter = new Meter(MeterName, MeterVersion);
+
+        while (retryAttempts-- != 0)
         {
-            Assert.Throws<ArgumentException>(() =>
+            port = random.Next(2000, 5000);
+            address = $"http://localhost:{port}/";
+
+            try
             {
-                using MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder()
-                    .AddPrometheusHttpListener(options => options.UriPrefixes = new string[] { })
-                    .Build();
-            });
-        }
-
-        [Fact]
-        public void UriPrefixesInvalid()
-        {
-            Assert.Throws<InvalidOperationException>(() =>
-            {
-                using MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder()
-                    .AddPrometheusHttpListener(options => options.UriPrefixes = new string[] { "ftp://example.com" })
-                    .Build();
-            });
-        }
-
-        [Fact]
-        public async Task PrometheusExporterHttpServerIntegration()
-        {
-            await this.RunPrometheusExporterHttpServerIntegrationTest().ConfigureAwait(false);
-        }
-
-        [Fact]
-        public async Task PrometheusExporterHttpServerIntegration_NoMetrics()
-        {
-            await this.RunPrometheusExporterHttpServerIntegrationTest(skipMetrics: true).ConfigureAwait(false);
-        }
-
-        private async Task RunPrometheusExporterHttpServerIntegrationTest(bool skipMetrics = false)
-        {
-            Random random = new Random();
-            int retryAttempts = 5;
-            int port = 0;
-            string address = null;
-
-            MeterProvider provider;
-            using var meter = new Meter(this.meterName);
-
-            while (retryAttempts-- != 0)
-            {
-                port = random.Next(2000, 5000);
-                address = $"http://localhost:{port}/";
-
                 provider = Sdk.CreateMeterProviderBuilder()
                     .AddMeter(meter.Name)
-                    .AddPrometheusHttpListener(options => options.UriPrefixes = new string[] { address })
+                    .AddPrometheusHttpListener(options =>
+                    {
+                        options.UriPrefixes = new string[] { address };
+                    })
                     .Build();
+
+                break;
             }
-
-            var tags = new KeyValuePair<string, object>[]
+            catch
             {
-                new KeyValuePair<string, object>("key1", "value1"),
-                new KeyValuePair<string, object>("key2", "value2"),
-            };
-
-            var counter = meter.CreateCounter<double>("counter_double");
-            if (!skipMetrics)
-            {
-                counter.Add(100.18D, tags);
-                counter.Add(0.99D, tags);
+                // ignored
             }
+        }
 
-            using HttpClient client = new HttpClient();
-            using var response = await client.GetAsync($"{address}metrics").ConfigureAwait(false);
+        if (provider == null)
+        {
+            throw new InvalidOperationException("HttpListener could not be started");
+        }
 
-            if (!skipMetrics)
+        var tags = new KeyValuePair<string, object>[]
+        {
+            new KeyValuePair<string, object>("key1", "value1"),
+            new KeyValuePair<string, object>("key2", "value2"),
+        };
+
+        var counter = meter.CreateCounter<double>("counter_double");
+        if (!skipMetrics)
+        {
+            counter.Add(100.18D, tags);
+            counter.Add(0.99D, tags);
+        }
+
+        using HttpClient client = new HttpClient();
+
+        if (!string.IsNullOrEmpty(acceptHeader))
+        {
+            client.DefaultRequestHeaders.Add("Accept", acceptHeader);
+        }
+
+        using var response = await client.GetAsync($"{address}metrics");
+
+        if (!skipMetrics)
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True(response.Content.Headers.Contains("Last-Modified"));
+
+            if (requestOpenMetrics)
             {
-                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                Assert.True(response.Content.Headers.Contains("Last-Modified"));
-                Assert.Equal("text/plain; charset=utf-8; version=0.0.4", response.Content.Headers.ContentType.ToString());
-
-                Assert.Matches(
-                    "^# TYPE counter_double counter\ncounter_double{key1='value1',key2='value2'} 101.17 \\d+\n\n# EOF\n$".Replace('\'', '"'),
-                    await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+                Assert.Equal("application/openmetrics-text; version=1.0.0; charset=utf-8", response.Content.Headers.ContentType.ToString());
             }
             else
             {
-                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                Assert.Equal("text/plain; charset=utf-8; version=0.0.4", response.Content.Headers.ContentType.ToString());
             }
+
+            var content = await response.Content.ReadAsStringAsync();
+
+            var expected = requestOpenMetrics
+                ? "# TYPE otel_scope_info info\n"
+                  + "# HELP otel_scope_info Scope metadata\n"
+                  + $"otel_scope_info{{otel_scope_name='{MeterName}'}} 1\n"
+                  + "# TYPE counter_double_total counter\n"
+                  + $"counter_double_total{{otel_scope_name='{MeterName}',otel_scope_version='{MeterVersion}',key1='value1',key2='value2'}} 101.17 (\\d+\\.\\d{{3}})\n"
+                  + "# EOF\n"
+                : "# TYPE counter_double_total counter\n"
+                  + $"counter_double_total{{otel_scope_name='{MeterName}',otel_scope_version='{MeterVersion}',key1='value1',key2='value2'}} 101.17 (\\d+)\n"
+                  + "# EOF\n";
+
+            Assert.Matches(("^" + expected + "$").Replace('\'', '"'), content);
         }
+        else
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        provider.Dispose();
     }
 }

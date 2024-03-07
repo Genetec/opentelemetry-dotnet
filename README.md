@@ -19,16 +19,7 @@ files.
 
 ## Project Status
 
-| Signal  | Status     |
-| ------- | ---------- |
-| Logs    | Stable*    |
-| Metrics | Stable     |
-| Traces  | Stable     |
-
-*While the `OpenTelemetryLoggerProvider` (i.e integration with `ILogger`) is
- stable, the [OTLP Exporter for
- Logs](https://github.com/open-telemetry/opentelemetry-dotnet/tree/main/src/OpenTelemetry.Exporter.OpenTelemetryProtocol#enable-log-exporter)
- is still non-stable.
+**Stable** across all 3 signals i.e. `Logs`, `Metrics`, and `Traces`.
 
 See [Spec Compliance
 Matrix](https://github.com/open-telemetry/opentelemetry-specification/blob/main/spec-compliance-matrix.md)
@@ -39,10 +30,14 @@ repo.
 
 If you are new here, please read the getting started docs:
 
-* [logs](./docs/logs/getting-started/README.md)
-* metrics: [ASP.NET Core](./docs/metrics/getting-started-aspnetcore/README.md) |
+* [Logs](./docs/logs/README.md): [ASP.NET
+  Core](./docs/logs/getting-started-aspnetcore/README.md) |
+  [Console](./docs/logs/getting-started-console/README.md)
+* [Metrics](./docs/metrics/README.md): [ASP.NET
+  Core](./docs/metrics/getting-started-aspnetcore/README.md) |
   [Console](./docs/metrics/getting-started-console/README.md)
-* traces: [ASP.NET Core](./docs/trace/getting-started-aspnetcore/README.md) |
+* [Traces](./docs/trace/README.md): [ASP.NET
+  Core](./docs/trace/getting-started-aspnetcore/README.md) |
   [Console](./docs/trace/getting-started-console/README.md)
 
 This repository includes multiple installable components, available on
@@ -60,16 +55,18 @@ Here are the [instrumentation
 libraries](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/glossary.md#instrumentation-library):
 
 * [ASP.NET Core](./src/OpenTelemetry.Instrumentation.AspNetCore/README.md)
-* [Grpc.Net.Client](./src/OpenTelemetry.Instrumentation.GrpcNetClient/README.md)
-* [HTTP clients](./src/OpenTelemetry.Instrumentation.Http/README.md)
-* [SQL client](./src/OpenTelemetry.Instrumentation.SqlClient/README.md)
+* gRPC client:
+  [Grpc.Net.Client](./src/OpenTelemetry.Instrumentation.GrpcNetClient/README.md)
+* HTTP clients: [System.Net.Http.HttpClient and
+  System.Net.HttpWebRequest](./src/OpenTelemetry.Instrumentation.Http/README.md)
+* SQL clients: [Microsoft.Data.SqlClient and
+  System.Data.SqlClient](./src/OpenTelemetry.Instrumentation.SqlClient/README.md)
 
 Here are the [exporter
 libraries](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/glossary.md#exporter-library):
 
 * [Console](./src/OpenTelemetry.Exporter.Console/README.md)
 * [In-memory](./src/OpenTelemetry.Exporter.InMemory/README.md)
-* [Jaeger](./src/OpenTelemetry.Exporter.Jaeger/README.md)
 * [OTLP](./src/OpenTelemetry.Exporter.OpenTelemetryProtocol/README.md)
   (OpenTelemetry Protocol)
 * [Prometheus AspNetCore](./src/OpenTelemetry.Exporter.Prometheus.AspNetCore/README.md)
@@ -108,7 +105,7 @@ extension scenarios:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md)
 
-We meet weekly on Tuesdays, and the time of the meeting alternates between 11AM
+We meet weekly on Tuesdays, and the time of the meeting alternates between 9AM
 PT and 4PM PT. The meeting is subject to change depending on contributors'
 availability. Check the [OpenTelemetry community
 calendar](https://calendar.google.com/calendar/embed?src=google.com_b79e3e90j7bbsa2n2p5an5lf60%40group.calendar.google.com)
@@ -118,6 +115,11 @@ Meeting notes are available as a public [Google
 doc](https://docs.google.com/document/d/1yjjD6aBcLxlRazYrawukDgrhZMObwHARJbB9glWdHj8/edit?usp=sharing).
 If you have trouble accessing the doc, please get in touch on
 [Slack](https://cloud-native.slack.com/archives/C01N3BC2W7Q).
+
+The meeting is open for all to join. We invite everyone to join our meeting,
+regardless of your experience level. Whether you're a seasoned OpenTelemetry
+developer, just starting your journey, or simply curious about the work we do,
+you're more than welcome to participate!
 
 [Maintainers](https://github.com/open-telemetry/community/blob/main/community-membership.md#maintainer)
 ([@open-telemetry/dotnet-maintainers](https://github.com/orgs/open-telemetry/teams/dotnet-maintainers)):
@@ -131,8 +133,12 @@ If you have trouble accessing the doc, please get in touch on
 
 * [Cijo Thomas](https://github.com/cijothomas), Microsoft
 * [Reiley Yang](https://github.com/reyang), Microsoft
-* [Robert Paj&#x105;k](https://github.com/pellared), Splunk
 * [Vishwesh Bankwar](https://github.com/vishweshbankwar), Microsoft
+
+[Triagers](https://github.com/open-telemetry/community/blob/main/community-membership.md#triager)
+([@open-telemetry/dotnet-triagers](https://github.com/orgs/open-telemetry/teams/dotnet-triagers)):
+
+* [Martin Thwaites](https://github.com/martinjt), Honeycomb
 
 [Emeritus
 Maintainer/Approver/Triager](https://github.com/open-telemetry/community/blob/main/community-membership.md#emeritus-maintainerapprovertriager):
@@ -142,6 +148,7 @@ Maintainer/Approver/Triager](https://github.com/open-telemetry/community/blob/ma
 * [Liudmila Molkova](https://github.com/lmolkova)
 * [Mike Goldsmith](https://github.com/MikeGoldsmith)
 * [Paulo Janotti](https://github.com/pjanotti)
+* [Robert Paj&#x105;k](https://github.com/pellared)
 * [Sergey Kanzhelev](https://github.com/SergeyKanzhelev)
 * [Victor Lu](https://github.com/victlu)
 
@@ -151,20 +158,21 @@ Maintainer/Approver/Triager](https://github.com/open-telemetry/community/blob/ma
 
 ## Release Schedule
 
-Only the [core components](./VERSIONING.md#core-components) of the repo have
-released a stable version. Components which are marked
-[pre-release](https://github.com/open-telemetry/opentelemetry-dotnet/blob/main/VERSIONING.md#pre-releases),
-are still work in progress and can undergo many breaking changes before stable
-release.
+See the [project
+milestones](https://github.com/open-telemetry/opentelemetry-dotnet/milestones)
+for details on upcoming releases. The dates and features described in issues and
+milestones are estimates, and subject to change.
 
 See the [release
 notes](https://github.com/open-telemetry/opentelemetry-dotnet/releases) for
 existing releases.
 
-See the [project
-milestones](https://github.com/open-telemetry/opentelemetry-dotnet/milestones)
-for details on upcoming releases. The dates and features described in issues and
-milestones are estimates, and subject to change.
+> [!CAUTION]
+> Certain components, marked as
+[pre-release](https://github.com/open-telemetry/opentelemetry-dotnet/blob/main/VERSIONING.md#pre-releases),
+are still work in progress and can undergo breaking changes before stable
+release. Check the individual `README.md` file for each component to understand its
+current state.
 
 Daily builds from this repo are published to MyGet, and can be installed from
 [this source](https://www.myget.org/F/opentelemetry/api/v3/index.json).

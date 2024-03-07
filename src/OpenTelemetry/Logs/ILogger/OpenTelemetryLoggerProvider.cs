@@ -1,20 +1,5 @@
-// <copyright file="OpenTelemetryLoggerProvider.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
-
-#nullable enable
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Collections;
 using System.Diagnostics;
@@ -63,9 +48,9 @@ public class OpenTelemetryLoggerProvider : BaseProvider, ILoggerProvider, ISuppo
                     builder.SetResourceBuilder(optionsInstance.ResourceBuilder);
                 }
 
-                foreach (var processor in optionsInstance.Processors)
+                foreach (var processorFactory in optionsInstance.ProcessorFactories)
                 {
-                    builder.AddProcessor(processor);
+                    builder.AddProcessor(processorFactory);
                 }
             })
             .Build();
@@ -111,6 +96,9 @@ public class OpenTelemetryLoggerProvider : BaseProvider, ILoggerProvider, ISuppo
     /// <inheritdoc/>
     public ILogger CreateLogger(string categoryName)
     {
+        // Lock-free reading leveraging Hashtable's thread safety feature.
+        // https://learn.microsoft.com/dotnet/api/system.collections.hashtable#thread-safety
+
         if (this.loggers[categoryName] is not ILogger logger)
         {
             lock (this.loggers)

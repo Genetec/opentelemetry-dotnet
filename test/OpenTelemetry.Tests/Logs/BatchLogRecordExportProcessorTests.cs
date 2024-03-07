@@ -1,111 +1,141 @@
-// <copyright file="BatchLogRecordExportProcessorTests.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 #if !NETFRAMEWORK
 using Microsoft.Extensions.Logging;
 using OpenTelemetry.Exporter;
 using Xunit;
 
-namespace OpenTelemetry.Logs.Tests
+namespace OpenTelemetry.Logs.Tests;
+
+public sealed class BatchLogRecordExportProcessorTests
 {
-    public sealed class BatchLogRecordExportProcessorTests
+    [Fact]
+    public void StateValuesAndScopeBufferingTest()
     {
-        [Fact]
-        public void StateValuesAndScopeBufferingTest()
-        {
-            var scopeProvider = new LoggerExternalScopeProvider();
+        var scopeProvider = new LoggerExternalScopeProvider();
 
-            List<LogRecord> exportedItems = new();
+        List<LogRecord> exportedItems = new();
 
-            using var processor = new BatchLogRecordExportProcessor(
-                new InMemoryExporter<LogRecord>(exportedItems),
-                scheduledDelayMilliseconds: int.MaxValue);
+        using var processor = new BatchLogRecordExportProcessor(
+            new InMemoryExporter<LogRecord>(exportedItems),
+            scheduledDelayMilliseconds: int.MaxValue);
 
-            using var scope = scopeProvider.Push(exportedItems);
+        using var scope = scopeProvider.Push(exportedItems);
 
-            var logRecord = new LogRecord();
+        var pool = LogRecordSharedPool.Current;
 
-            var state = new LogRecordTest.DisposingState("Hello world");
+        var logRecord = pool.Rent();
 
-            logRecord.ILoggerData.ScopeProvider = scopeProvider;
-            logRecord.StateValues = state;
+        var state = new LogRecordTest.DisposingState("Hello world");
 
-            processor.OnEnd(logRecord);
+        logRecord.ILoggerData.ScopeProvider = scopeProvider;
+        logRecord.StateValues = state;
 
-            state.Dispose();
+        processor.OnEnd(logRecord);
 
-            Assert.Empty(exportedItems);
+        state.Dispose();
 
-            Assert.Null(logRecord.ILoggerData.ScopeProvider);
-            Assert.False(ReferenceEquals(state, logRecord.StateValues));
-            Assert.NotNull(logRecord.AttributeStorage);
-            Assert.NotNull(logRecord.ILoggerData.BufferedScopes);
+        Assert.Empty(exportedItems);
 
-            KeyValuePair<string, object> actualState = logRecord.StateValues[0];
+        Assert.Null(logRecord.ILoggerData.ScopeProvider);
+        Assert.False(ReferenceEquals(state, logRecord.StateValues));
+        Assert.NotNull(logRecord.AttributeStorage);
+        Assert.NotNull(logRecord.ILoggerData.BufferedScopes);
 
-            Assert.Same("Value", actualState.Key);
-            Assert.Same("Hello world", actualState.Value);
+        KeyValuePair<string, object> actualState = logRecord.StateValues[0];
 
-            bool foundScope = false;
+        Assert.Same("Value", actualState.Key);
+        Assert.Same("Hello world", actualState.Value);
 
-            logRecord.ForEachScope<object>(
-                (s, o) =>
-                {
-                    foundScope = ReferenceEquals(s.Scope, exportedItems);
-                },
-                null);
+        bool foundScope = false;
 
-            Assert.True(foundScope);
-
-            processor.Shutdown();
-
-            Assert.Single(exportedItems);
-        }
-
-        [Fact]
-        public void StateBufferingTest()
-        {
-            // LogRecord.State is never inspected or buffered. Accessing it
-            // after OnEnd may throw. This test verifies that behavior. TODO:
-            // Investigate this. Potentially obsolete logRecord.State and force
-            // StateValues/ParseStateValues behavior.
-            List<LogRecord> exportedItems = new();
-
-            using var processor = new BatchLogRecordExportProcessor(
-                new InMemoryExporter<LogRecord>(exportedItems));
-
-            var logRecord = new LogRecord();
-
-            var state = new LogRecordTest.DisposingState("Hello world");
-            logRecord.State = state;
-
-            processor.OnEnd(logRecord);
-            processor.Shutdown();
-
-            state.Dispose();
-
-            Assert.Throws<ObjectDisposedException>(() =>
+        logRecord.ForEachScope<object>(
+            (s, o) =>
             {
-                IReadOnlyList<KeyValuePair<string, object>> state = (IReadOnlyList<KeyValuePair<string, object>>)logRecord.State;
+                foundScope = ReferenceEquals(s.Scope, exportedItems);
+            },
+            null);
 
-                foreach (var kvp in state)
-                {
-                }
-            });
-        }
+        Assert.True(foundScope);
+
+        processor.Shutdown();
+
+        Assert.Single(exportedItems);
+        Assert.Same(logRecord, exportedItems[0]);
+    }
+
+    [Fact]
+    public void StateBufferingTest()
+    {
+        // LogRecord.State is never inspected or buffered. Accessing it
+        // after OnEnd may throw. This test verifies that behavior. TODO:
+        // Investigate this. Potentially obsolete logRecord.State and force
+        // StateValues/ParseStateValues behavior.
+        List<LogRecord> exportedItems = new();
+
+        using var processor = new BatchLogRecordExportProcessor(
+            new InMemoryExporter<LogRecord>(exportedItems));
+
+        var pool = LogRecordSharedPool.Current;
+
+        var logRecord = pool.Rent();
+
+        var state = new LogRecordTest.DisposingState("Hello world");
+        logRecord.State = state;
+
+        processor.OnEnd(logRecord);
+        processor.Shutdown();
+
+        Assert.Single(exportedItems);
+        Assert.Same(logRecord, exportedItems[0]);
+
+        state.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() =>
+        {
+            IReadOnlyList<KeyValuePair<string, object>> state = (IReadOnlyList<KeyValuePair<string, object>>)logRecord.State;
+
+            foreach (var kvp in state)
+            {
+            }
+        });
+    }
+
+    [Fact]
+    public void CopyMadeWhenLogRecordIsFromThreadStaticPoolTest()
+    {
+        List<LogRecord> exportedItems = new();
+
+        using var processor = new BatchLogRecordExportProcessor(
+            new InMemoryExporter<LogRecord>(exportedItems));
+
+        var pool = LogRecordThreadStaticPool.Instance;
+
+        var logRecord = pool.Rent();
+
+        processor.OnEnd(logRecord);
+        processor.Shutdown();
+
+        Assert.Single(exportedItems);
+        Assert.NotSame(logRecord, exportedItems[0]);
+    }
+
+    [Fact]
+    public void LogRecordAddedToBatchIfNotFromAnyPoolTest()
+    {
+        List<LogRecord> exportedItems = new();
+
+        using var processor = new BatchLogRecordExportProcessor(
+            new InMemoryExporter<LogRecord>(exportedItems));
+
+        var logRecord = new LogRecord();
+
+        processor.OnEnd(logRecord);
+        processor.Shutdown();
+
+        Assert.Single(exportedItems);
+        Assert.Same(logRecord, exportedItems[0]);
     }
 }
 #endif

@@ -29,7 +29,10 @@
       {
         "files": [
           ".editorconfig",
-          "**.cs"
+          "**.cs",
+          "Directory.Packages.props",
+          "LICENSE.TXT",
+          "THIRD-PARTY-NOTICES.TXT"
         ]
       }
     ],

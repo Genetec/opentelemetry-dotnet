@@ -1,67 +1,53 @@
-// <copyright file="ZipkinActivityConversionExtensionsTest.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
 using OpenTelemetry.Internal;
 using Xunit;
 using static OpenTelemetry.Exporter.Zipkin.Implementation.ZipkinActivityConversionExtensions;
 
-namespace OpenTelemetry.Exporter.Zipkin.Implementation.Tests
+namespace OpenTelemetry.Exporter.Zipkin.Implementation.Tests;
+
+public class ZipkinActivityConversionExtensionsTest
 {
-    public class ZipkinActivityConversionExtensionsTest
+    [Theory]
+    [InlineData("int", 1)]
+    [InlineData("string", "s")]
+    [InlineData("bool", true)]
+    [InlineData("double", 1.0)]
+    public void CheckProcessTag(string key, object value)
     {
-        [Theory]
-        [InlineData("int", 1)]
-        [InlineData("string", "s")]
-        [InlineData("bool", true)]
-        [InlineData("double", 1.0)]
-        public void CheckProcessTag(string key, object value)
+        var attributeEnumerationState = new TagEnumerationState
         {
-            var attributeEnumerationState = new TagEnumerationState
-            {
-                Tags = PooledList<KeyValuePair<string, object>>.Create(),
-            };
+            Tags = PooledList<KeyValuePair<string, object>>.Create(),
+        };
 
-            using var activity = new Activity("TestActivity");
-            activity.SetTag(key, value);
+        using var activity = new Activity("TestActivity");
+        activity.SetTag(key, value);
 
-            attributeEnumerationState.EnumerateTags(activity);
+        attributeEnumerationState.EnumerateTags(activity);
 
-            Assert.Equal(key, attributeEnumerationState.Tags[0].Key);
-            Assert.Equal(value, attributeEnumerationState.Tags[0].Value);
-        }
+        Assert.Equal(key, attributeEnumerationState.Tags[0].Key);
+        Assert.Equal(value, attributeEnumerationState.Tags[0].Value);
+    }
 
-        [Theory]
-        [InlineData("int", null)]
-        [InlineData("string", null)]
-        [InlineData("bool", null)]
-        [InlineData("double", null)]
-        public void CheckNullValueProcessTag(string key, object value)
+    [Theory]
+    [InlineData("int", null)]
+    [InlineData("string", null)]
+    [InlineData("bool", null)]
+    [InlineData("double", null)]
+    public void CheckNullValueProcessTag(string key, object value)
+    {
+        var attributeEnumerationState = new TagEnumerationState
         {
-            var attributeEnumerationState = new TagEnumerationState
-            {
-                Tags = PooledList<KeyValuePair<string, object>>.Create(),
-            };
+            Tags = PooledList<KeyValuePair<string, object>>.Create(),
+        };
 
-            using var activity = new Activity("TestActivity");
-            activity.SetTag(key, value);
+        using var activity = new Activity("TestActivity");
+        activity.SetTag(key, value);
 
-            attributeEnumerationState.EnumerateTags(activity);
+        attributeEnumerationState.EnumerateTags(activity);
 
-            Assert.Empty(attributeEnumerationState.Tags);
-        }
+        Assert.Empty(attributeEnumerationState.Tags);
     }
 }

@@ -2,25 +2,251 @@
 
 ## Unreleased
 
-* Add back support for Exemplars. See [exemplars](../../docs/metrics/customizing-the-sdk/README.md#exemplars)
-  for instructions to enable exemplars.
-  ([#4553](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4553))
+* Throw NotSupportedException when using `SetErrorStatusOnException` method for
+  Tracing in Mono Runtime and Native AOT environment because the dependent
+  `Marshal.GetExceptionPointers()` API is not supported on these platforms.
+  ([#5374](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5374))
 
-* Added [Logs Bridge
-  API](https://github.com/open-telemetry/opentelemetry-specification/blob/976432b74c565e8a84af3570e9b82cb95e1d844c/specification/logs/bridge-api.md)
-  implementation (`Sdk.CreateLoggerProviderBuilder`, etc.).
-  ([#4433](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4433))
+* Fixed an issue where `LogRecord.Attributes` (or `LogRecord.StateValues` alias)
+  could become out of sync with `LogRecord.State` if either is set directly via
+  the public setters. This was done to further mitigate issues introduced in
+  1.5.0 causing attributes added using custom processor(s) to be missing after
+  upgrading. For details see:
+  ([#5169](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5169))
 
-* Obsoleted `LogRecord.LogLevel` in favor of the `LogRecord.Severity` property
-  which matches the [OpenTelemetry Specification > Logs DataModel > Severity
-  definition](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber).
-  ([#4433](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4433))
+* Fixed an issue where `SimpleExemplarReservoir` was not resetting internal
+  state for cumulative temporality.
+  ([#5230](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5230))
 
-* Added `LogRecord.Logger` property to access the [OpenTelemetry Specification >
-  Instrumentation
-  Scope](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/glossary.md#instrumentation-scope)
-  provided during Logger creation.
-  ([#4433](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4433))
+* Fixed an issue causing `LogRecord`s to be incorrectly reused when wrapping an
+  instance of `BatchLogRecordExportProcessor` inside another
+  `BaseProcessor<LogRecord>` which leads to missing or incorrect data during
+  export.
+  ([#5255](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5255))
+
+* **Experimental (pre-release builds only):** Added support for setting
+  `CardinalityLimit` (the maximum number of data points allowed for a metric)
+  when configuring a view (applies to individual metrics) and obsoleted
+  `MeterProviderBuilderExtensions.SetMaxMetricPointsPerMetricStream` (previously
+  applied to all metrics). The default cardinality limit for metrics remains at
+  `2000`.
+  ([#5312](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5312),
+  [#5328](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5328))
+
+* Updated `LogRecord` to keep `CategoryName` and `Logger` in sync when using the
+  experimental Log Bridge API.
+  [#5317](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5317)
+
+* Added `OpenTelemetryBuilderSdkExtensions` class which contains extension
+  methods (`ConfigureResource`, `WithMetrics`, `WithTracing`, and experimental
+  `WithLogging`) for the `IOpenTelemetryBuilder` interface.
+  ([#5265](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5265))
+
+* Added `Microsoft.Extensions.Diagnostics.Abstractions` dependency so that the
+  `IOpenTelemetryBuilder.WithMetrics` extension method can configure
+  [IMetricsListener](https://learn.microsoft.com/dotNet/api/microsoft.extensions.diagnostics.metrics.imetricslistener).
+  ([#5265](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5265))
+
+* **Experimental (pre-release builds only):** The `Exemplar.FilteredTags`
+  property now returns a `ReadOnlyFilteredTagCollection` instance and the
+  `Exemplar.LongValue` property has been added. The `MetricPoint.GetExemplars`
+  method has been replaced by `MetricPoint.TryGetExemplars` which outputs a
+  `ReadOnlyExemplarCollection` instance. These are **breaking changes** for
+  metrics exporters which support exemplars.
+  ([#5386](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5386))
+
+* **Experimental (pre-release builds only):** Added support for exemplars when
+  using Base2 Exponential Bucket Histogram Aggregation configured via the View
+  API.
+  ([#5396](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5396))
+
+* **Experimental (pre-release builds only):** Removed the `ExemplarFilter`,
+  `AlwaysOffExemplarFilter`, `AlwaysOnExemplarFilter`, and
+  `TraceBasedExemplarFilter` APIs. The `MeterProviderBuilder.SetExemplarFilter`
+  extension method now accepts an `ExemplarFilterType` enumeration (which
+  contains definitions for the supported filter types `AlwaysOff`, `AlwaysOn`,
+  and `TraceBased`) instead of an `ExemplarFilter` instance. This was done in
+  response to changes made to the [OpenTelemetry Metrics SDK
+  Specification](https://github.com/open-telemetry/opentelemetry-specification/pull/3820).
+  ([#5404](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5404))
+
+* **Experimental (pre-release builds only):** The `ExemplarFilter` used by SDK
+  `MeterProvider`s can now be controlled via the `OTEL_METRICS_EXEMPLAR_FILTER`
+  environment variable. The supported values are: `always_off`, `always_on`, and
+  `trace_based`. For details see: [OpenTelemetry Environment Variable
+  Specification](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/configuration/sdk-environment-variables.md#exemplar).
+  ([#5412](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5412))
+
+## 1.7.0
+
+Released 2023-Dec-08
+
+## 1.7.0-rc.1
+
+Released 2023-Nov-29
+
+* The `AddService` `ResourceBuilder` extension method will now generate the same
+  `service.instance.id` for the lifetime of a process when
+  `autoGenerateServiceInstanceId` is `true`.
+  ([#4988](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4988))
+
+* Fixed a Metrics SDK bug which led to `ExemplarReservoir.Offer` always being
+  called regardless of whether or not the `ExemplarFilter` sampled the
+  measurement.
+  ([#5004](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5004))
+  ([#5016](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5016))
+
+* Update Metrics SDK to override the default histogram buckets for the following
+  metrics from ASP.NET Core and HttpClient runtime:
+  * `signalr.server.connection.duration`
+  * `kestrel.connection.duration`
+  * `http.client.connection.duration`
+
+  These histogram metrics which have their `Unit` as `s` (second) will have
+  their default histogram buckets as `[ 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2,
+  5, 10, 30, 60, 120, 300 ]`.
+  ([#5008](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5008))
+  ([#5021](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5021))
+
+* Remove the bucket with value `0` for histogram buckets for all metrics from
+  ASP.NET Core and HttpClient.
+  ([#5021](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5021))
+
+* Updated `Microsoft.Extensions.Logging.Configuration` package version to
+  `8.0.0`.
+  ([#5051](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5051))
+
+* Updated `Microsoft.Extensions.Logging` package version to
+  `8.0.0`.
+  ([#5051](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5051))
+
+* Revert the default behavior of Metrics SDK for Delta aggregation. It would not
+  reclaim unused Metric Points by default. You can enable the SDK to reclaim
+  unused Metric Points by setting the environment variable
+  `OTEL_DOTNET_EXPERIMENTAL_METRICS_RECLAIM_UNUSED_METRIC_POINTS` to `true`
+  before setting up the `MeterProvider`.
+  ([#5052](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5052))
+
+* Update Metrics SDK to override the default histogram buckets for ASP.NET
+  (.NET Framework).
+
+  Histogram metrics for the meter name `OpenTelemetry.Instrumentation.AspNet`
+  and instrument name `http.request.server.duration` which have their `Unit`
+  as `s` (second) will have their default histogram buckets as `[ 0.005, 0.01,
+  0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 ]`.
+  ([#5063](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5063))
+
+* Added `AddProcessor` overload on `OpenTelemetryLoggerOptions` which exposes
+  the factory pattern `(Func<IServiceProvider, BaseProcessor<LogRecord>>
+  implementationFactory)`.
+  ([#4916](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4916))
+
+* Add support for Instrumentation Scope Attributes (i.e [Meter
+  Tags](https://learn.microsoft.com/dotnet/api/system.diagnostics.metrics.meter.tags)),
+  fixing issue
+  [#4563](https://github.com/open-telemetry/opentelemetry-dotnet/issues/4563).
+  ([#5089](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5089))
+
+* Added the `ILoggingBuilder.UseOpenTelemetry` experimental API extension for
+  registering OpenTelemetry `ILogger` integration using `LoggerProviderBuilder`
+  which supports the full DI (`IServiceCollection` \ `IServiceProvider`) API
+  surface (mirrors tracing & metrics).
+  ([#5072](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5072))
+
+* Changed the `ILoggingBuilder` registration extensions (`AddOpenTelemetry` &
+  `UseOpenTelemetry`) to fire the optional `OpenTelemetryLoggerOptions`
+  configuration delegate AFTER the "Logging:OpenTelemetry" `IConfiguration`
+  section has been applied.
+  ([#5072](https://github.com/open-telemetry/opentelemetry-dotnet/pull/5072))
+
+## 1.7.0-alpha.1
+
+Released 2023-Oct-16
+
+* Update `AggregatorStore` to reclaim unused MetricPoints for Delta aggregation
+  temporality.
+  ([#4486](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4486))
+
+* Fixed a bug where `TracerProviderBuilderBase` was not invoking the
+  `instrumentationFactory` delegate passed to the `protected`
+  `AddInstrumentation` method.
+  ([#4873](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4873))
+
+* Allowed metric instrument names to contain `/` characters.
+  ([#4882](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4882))
+
+* **Breaking Change** `[Tracer|Meter|Logger]ProviderBuilder.Build` extension
+  will now throw a `NotSupportedException` if invoked on a non-SDK builder type.
+  Previously it would return `null`.
+  ([#4885](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4885))
+
+* Updated `Microsoft.Extensions.Logging` package version to
+  `8.0.0-rc.1.23419.4`.
+  ([#4920](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4920),
+  [#4933](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4933))
+
+## 1.6.0
+
+Released 2023-Sep-05
+
+* Increased the character limit of the Meter instrument name from 63 to 255.
+  ([#4798](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4798))
+
+* Update default size for `SimpleExemplarReservoir` to `1`.
+  ([#4803](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4803))
+
+* Update Metrics SDK to override the default histogram buckets for a set of
+  well-known histogram metrics from ASP.NET Core and HttpClient runtime. These
+  histogram metrics which have their `Unit` as `s` (second) will have their
+  default histogram buckets as `[ 0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25,
+  0.5, 0.75, 1, 2.5, 5, 7.5, 10 ]`.
+  ([#4820](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4820))
+
+## 1.6.0-rc.1
+
+Released 2023-Aug-21
+
+* **Experimental Feature** Added an opt-in feature to aggregate any metric
+  measurements that were dropped due to reaching the [max MetricPoints
+  limit](https://github.com/open-telemetry/opentelemetry-dotnet/tree/core-1.6.0-alpha.1/docs/metrics/customizing-the-sdk).
+  When this feature is enabled, SDK would aggregate such measurements using a
+  reserved MetricPoint with a single tag with key as `otel.metric.overflow` and
+  value as `true`. The feature is turned-off by default. You can enable it by
+  setting the environment variable
+  `OTEL_DOTNET_EXPERIMENTAL_METRICS_EMIT_OVERFLOW_ATTRIBUTE` to `true` before
+  setting up the `MeterProvider`.
+  ([#4737](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4737))
+
+## 1.6.0-alpha.1
+
+Released 2023-Jul-12
+
+* **Experimental (pre-release builds only):**
+
+  * Note: See
+    [#4735](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4735)
+    for the introduction of experimental api support.
+
+  * Add back support for Exemplars. See
+    [exemplars](../../docs/metrics/customizing-the-sdk/README.md#exemplars) for
+    instructions to enable exemplars.
+    ([#4553](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4553))
+
+  * Added [Logs Bridge
+    API](https://github.com/open-telemetry/opentelemetry-specification/blob/976432b74c565e8a84af3570e9b82cb95e1d844c/specification/logs/bridge-api.md)
+    implementation (`Sdk.CreateLoggerProviderBuilder`, etc.).
+    ([#4433](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4433))
+
+  * Obsoleted `LogRecord.LogLevel` in favor of the `LogRecord.Severity` property
+    which matches the [OpenTelemetry Specification > Logs DataModel > Severity
+    definition](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber).
+    ([#4433](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4433))
+
+  * Added `LogRecord.Logger` property to access the [OpenTelemetry Specification
+    Instrumentation
+    Scope](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/glossary.md#instrumentation-scope)
+    provided during Logger creation.
+    ([#4433](https://github.com/open-telemetry/opentelemetry-dotnet/pull/4433))
 
 * Fix the issue of potentially running into the `ArgumentException`: `An
   instance of EventSource with Guid af2d5796-946b-50cb-5f76-166a609afcbb already
@@ -742,7 +968,7 @@ Released 2020-Nov-17
   `TracerProviderBuilder.SetResourceBuilder`.
   ([#1533](https://github.com/open-telemetry/opentelemetry-dotnet/pull/1533))
 * By default `TracerProvider` will set a `Resource` containing [Telemetry
-    SDK](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/resource/semantic_conventions#telemetry-sdk)
+    SDK](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/resource/README.md#telemetry-sdk)
     details
     ([#1533](https://github.com/open-telemetry/opentelemetry-dotnet/pull/1533)):
   * `telemetry.sdk.name` = `opentelemetry`

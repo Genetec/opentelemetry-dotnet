@@ -1,51 +1,66 @@
-// <copyright file="MetricPointOptionalComponents.cs" company="OpenTelemetry Authors">
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// </copyright>
+// SPDX-License-Identifier: Apache-2.0
 
-namespace OpenTelemetry.Metrics
+using System.Runtime.CompilerServices;
+
+namespace OpenTelemetry.Metrics;
+
+/// <summary>
+/// Stores optional components of a metric point.
+/// Histogram, Exemplar are current components.
+/// ExponentialHistogram is a future component.
+/// This is done to keep the MetricPoint (struct)
+/// size in control.
+/// </summary>
+internal sealed class MetricPointOptionalComponents
 {
-    /// <summary>
-    /// Stores optional components of a metric point.
-    /// Histogram, Exemplar are current components.
-    /// ExponentialHistogram is a future component.
-    /// This is done to keep the MetricPoint (struct)
-    /// size in control.
-    /// </summary>
-    internal sealed class MetricPointOptionalComponents
+    public HistogramBuckets? HistogramBuckets;
+
+    public Base2ExponentialBucketHistogram? Base2ExponentialBucketHistogram;
+
+    public ExemplarReservoir? ExemplarReservoir;
+
+    public ReadOnlyExemplarCollection Exemplars = ReadOnlyExemplarCollection.Empty;
+
+    private int isCriticalSectionOccupied = 0;
+
+    public MetricPointOptionalComponents Copy()
     {
-        public HistogramBuckets HistogramBuckets;
-
-        public Base2ExponentialBucketHistogram Base2ExponentialBucketHistogram;
-
-        public ExemplarReservoir ExemplarReservoir;
-
-        public Exemplar[] Exemplars;
-
-        public int IsCriticalSectionOccupied = 0;
-
-        internal MetricPointOptionalComponents Copy()
+        MetricPointOptionalComponents copy = new MetricPointOptionalComponents
         {
-            MetricPointOptionalComponents copy = new MetricPointOptionalComponents();
-            copy.HistogramBuckets = this.HistogramBuckets?.Copy();
-            copy.Base2ExponentialBucketHistogram = this.Base2ExponentialBucketHistogram?.Copy();
-            if (this.Exemplars != null)
-            {
-                Array.Copy(this.Exemplars, copy.Exemplars, this.Exemplars.Length);
-            }
+            HistogramBuckets = this.HistogramBuckets?.Copy(),
+            Base2ExponentialBucketHistogram = this.Base2ExponentialBucketHistogram?.Copy(),
+            Exemplars = this.Exemplars.Copy(),
+        };
 
-            return copy;
+        return copy;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void AcquireLock()
+    {
+        if (Interlocked.Exchange(ref this.isCriticalSectionOccupied, 1) != 0)
+        {
+            this.AcquireLockRare();
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ReleaseLock()
+    {
+        Interlocked.Exchange(ref this.isCriticalSectionOccupied, 0);
+    }
+
+    // Note: This method is marked as NoInlining because the whole point of it
+    // is to avoid the initialization of SpinWait unless it is needed.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void AcquireLockRare()
+    {
+        var sw = default(SpinWait);
+        do
+        {
+            sw.SpinOnce();
+        }
+        while (Interlocked.Exchange(ref this.isCriticalSectionOccupied, 1) != 0);
     }
 }
